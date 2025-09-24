@@ -71,7 +71,11 @@ if docker-compose ps | grep -q "Up"; then
     
     echo ""
     print_status "📱 To see QR code for WhatsApp login:"
-    echo "docker-compose logs -f whatsapp-bot"
+    echo "docker-compose logs -f whatsapp-bot-learn"
+    
+    echo ""
+    print_success "🌐 Dashboard Web Interface:"
+    echo "http://localhost:42981"
     
     echo ""
     print_status "🔧 Useful commands:"
@@ -79,10 +83,12 @@ if docker-compose ps | grep -q "Up"; then
     echo "• Stop bot: docker-compose down"
     echo "• Restart bot: docker-compose restart"
     echo "• Update bot: git pull && ./deploy.sh"
+    echo "• Access dashboard: http://localhost:42981"
     
     echo ""
     print_success "🎉 Deployment completed successfully!"
     print_warning "📱 Don't forget to scan the QR code with your WhatsApp!"
+    print_status "🌐 Access dashboard at: http://localhost:42981"
     
 else
     print_error "❌ Failed to start the container"

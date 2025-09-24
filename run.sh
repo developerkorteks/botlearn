@@ -59,6 +59,7 @@ run_bot() {
     echo -e "${GREEN}🚀 Starting WhatsApp Bot...${NC}"
     echo -e "${BLUE}📱 Jika belum login, QR code akan muncul${NC}"
     echo -e "${BLUE}⚡ Tekan Ctrl+C untuk stop bot${NC}"
+    echo -e "${GREEN}🌐 Dashboard akan tersedia di: http://localhost:42981${NC}"
     echo ""
     
     cd cmd
@@ -71,6 +72,7 @@ run_bot_debug() {
     echo -e "${GREEN}🔍 Starting WhatsApp Bot (Debug Mode)...${NC}"
     echo -e "${YELLOW}⚠️ Debug mode akan menampilkan log detail${NC}"
     echo -e "${BLUE}📱 Jika belum login, QR code akan muncul${NC}"
+    echo -e "${GREEN}🌐 Dashboard akan tersedia di: http://localhost:42981${NC}"
     echo -e "${BLUE}⚡ Tekan Ctrl+C untuk stop bot${NC}"
     echo ""
     
@@ -84,15 +86,15 @@ build_bot() {
     echo -e "${YELLOW}🔧 Building WhatsApp Bot binary...${NC}"
     
     cd cmd
-    go build -o ../whatsapp-bot main.go
+    go build -o ../whatsapp-bot-learn main.go
     cd ..
     
-    if [ -f "whatsapp-bot" ]; then
+    if [ -f "whatsapp-bot-learn" ]; then
         echo -e "${GREEN}✅ Binary berhasil dibuild!${NC}"
-        echo -e "${BLUE}💡 Jalankan dengan: ./whatsapp-bot${NC}"
+        echo -e "${BLUE}💡 Jalankan dengan: ./whatsapp-bot-learn${NC}"
         
         # Buat executable
-        chmod +x whatsapp-bot
+        chmod +x whatsapp-bot-learn
     else
         echo -e "${RED}❌ Gagal build binary!${NC}"
     fi

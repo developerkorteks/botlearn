@@ -51,3 +51,4 @@ else
 fi
 
 print_status "📱 View logs: docker-compose logs -f"
+print_status "🌐 Dashboard: http://localhost:42981"
