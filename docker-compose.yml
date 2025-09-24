@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  whatsapp-bot:
+    build: .
+    container_name: auto-promote-bot
+    restart: unless-stopped
+    volumes:
+      # Persist data directory for databases and files
+      - ./data:/app/data
+      # Mount current directory for database files (they will be created automatically)
+      - .:/app/host_data
+    environment:
+      - TZ=Asia/Jakarta
+    ports:
+      - "42981:42981"
+    networks:
+      - bot-network
+    # Dashboard web interface port
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  bot-network:
+    driver: bridge
+
+volumes:
+  bot-data:
+    driver: local
