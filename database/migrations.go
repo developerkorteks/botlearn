@@ -26,6 +26,7 @@ func RunLearningMigrations(db *sql.DB) error {
 		createLearningCommandsTable,
 		createAutoResponsesTable,
 		createCommandUsageLogsTable,
+		createForbiddenWordsTable, // Tambahkan ini
 		insertDefaultLearningCommands,
 		insertDefaultAutoResponses,
 	}
@@ -466,4 +467,18 @@ INSERT OR IGNORE INTO auto_responses (keyword, response_type, text_response, is_
 ('belajar', 'text', '📚 Bagus! Semangat belajarnya! Coba ketik .help untuk melihat materi pembelajaran.', 1, 'system'),
 ('thanks', 'text', '🙏 Sama-sama! Senang bisa membantu pembelajaran kalian!', 1, 'system'),
 ('terima kasih', 'text', '🙏 Sama-sama! Semoga ilmunya bermanfaat!', 1, 'system');
+`
+
+// SQL untuk membuat tabel forbidden_words
+const createForbiddenWordsTable = `
+CREATE TABLE IF NOT EXISTS forbidden_words (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_jid TEXT NOT NULL,
+    word TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(group_jid, word)
+);
+
+CREATE INDEX IF NOT EXISTS idx_forbidden_words_group_jid ON forbidden_words(group_jid);
 `

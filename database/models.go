@@ -509,3 +509,12 @@ var DefaultAutoResponses = []AutoResponse{
 func stringPtr(s string) *string {
 	return &s
 }
+
+// ForbiddenWord menyimpan kata-kata yang dilarang di grup tertentu
+type ForbiddenWord struct {
+	ID        int       `json:"id" db:"id"`
+	GroupJID  string    `json:"group_jid" db:"group_jid"`
+	Word      string    `json:"word" db:"word"`
+	CreatedBy string    `json:"created_by" db:"created_by"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
+}

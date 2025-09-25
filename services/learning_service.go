@@ -12,6 +12,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 
 	"github.com/nabilulilalbab/promote/database"
 	"github.com/nabilulilalbab/promote/utils"
@@ -105,6 +106,98 @@ func (s *LearningService) RemoveAllowedGroup(groupJID string) error {
 func (s *LearningService) GetAllowedGroups() ([]database.LearningGroup, error) {
 	return s.repository.GetAllLearningGroups()
 }
+
+// === FORBIDDEN WORDS MANAGEMENT ===
+
+func (s *LearningService) GetForbiddenWords(groupJID string) ([]database.ForbiddenWord, error) {
+	return s.repository.GetForbiddenWordsByGroup(groupJID)
+}
+
+func (s *LearningService) AddForbiddenWord(groupJID, word, createdBy string) error {
+	forbiddenWord := &database.ForbiddenWord{
+		GroupJID:  groupJID,
+		Word:      word,
+		CreatedBy: createdBy,
+	}
+	return s.repository.CreateForbiddenWord(forbiddenWord)
+}
+
+func (s *LearningService) DeleteForbiddenWord(id int) error {
+	return s.repository.DeleteForbiddenWord(id)
+}
+
+func (s *LearningService) CheckAndHandleForbiddenWord(evt *events.Message) error {
+	messageText := s.getMessageText(evt.Message)
+	if messageText == "" {
+		return nil // Bukan pesan teks
+	}
+
+	groupJID := evt.Info.Chat
+	userJID := evt.Info.Sender
+
+	forbiddenWords, err := s.GetForbiddenWords(groupJID.String())
+	if err != nil {
+		return fmt.Errorf("failed to get forbidden words: %v", err)
+	}
+
+	if len(forbiddenWords) == 0 {
+		return nil // Tidak ada kata terlarang untuk grup ini
+	}
+
+	lowerMessage := strings.ToLower(messageText)
+	for _, forbiddenWord := range forbiddenWords {
+		if strings.Contains(lowerMessage, strings.ToLower(forbiddenWord.Word)) {
+			s.logger.Infof("Forbidden word '%s' found in message from %s in group %s. Removing user...", forbiddenWord.Word, userJID.String(), groupJID.String())
+
+			// Dapatkan info grup untuk JID yang benar
+			groupInfo, err := s.client.GetGroupInfo(groupJID)
+			if err != nil {
+				return fmt.Errorf("failed to get group info: %v", err)
+			}
+
+			var targetJID types.JID
+			for _, p := range groupInfo.Participants {
+				if p.JID.User == userJID.User {
+					targetJID = p.JID
+					break
+				}
+			}
+
+			if targetJID.User == "" {
+				return fmt.Errorf("could not find user in group participants")
+			}
+
+			// Tendang pengguna dari grup
+			_, err = s.client.UpdateGroupParticipants(groupJID, []types.JID{targetJID}, whatsmeow.ParticipantChangeRemove)
+			if err != nil {
+				s.logger.Errorf("Failed to remove user %s from group %s: %v", userJID.String(), groupJID.String(), err)
+				return fmt.Errorf("failed to remove user: %v", err)
+			}
+
+			s.logger.Infof("User %s successfully removed from group %s.", userJID.String(), groupJID.String())
+			return nil // Pengguna sudah ditendang, berhenti proses
+		}
+	}
+
+	return nil
+}
+
+// getMessageText mengekstrak teks dari berbagai tipe pesan WhatsApp
+func (s *LearningService) getMessageText(msg *waProto.Message) string {
+	// Pesan teks biasa
+	if msg.GetConversation() != "" {
+		return msg.GetConversation()
+	}
+
+	// Pesan teks dengan format (bold, italic, dll) atau reply
+	if msg.GetExtendedTextMessage() != nil {
+		return msg.GetExtendedTextMessage().GetText()
+	}
+
+	// Jika bukan teks, return empty string
+	return ""
+}
+
 
 // === COMMAND PROCESSING ===
 

@@ -62,6 +62,11 @@ type Repository interface {
 	LogCommandUsage(log *CommandUsageLog) error
 	GetCommandUsageLogs(limit int) ([]CommandUsageLog, error)
 	GetCommandUsageStats(days int) (map[string]int, error)
+
+	// Forbidden Words
+	CreateForbiddenWord(word *ForbiddenWord) error
+	GetForbiddenWordsByGroup(groupJID string) ([]ForbiddenWord, error)
+	DeleteForbiddenWord(id int) error
 }
 
 // SQLiteRepository implementasi repository untuk SQLite
@@ -740,6 +745,40 @@ func (r *SQLiteRepository) GetCommandUsageStats(days int) (map[string]int, error
 	
 	return stats, nil
 }
+
+// === FORBIDDEN WORDS ===
+
+func (r *SQLiteRepository) CreateForbiddenWord(word *ForbiddenWord) error {
+	query := `INSERT INTO forbidden_words (group_jid, word, created_by, created_at) VALUES (?, ?, ?, ?)`
+	_, err := r.db.Exec(query, word.GroupJID, word.Word, word.CreatedBy, time.Now())
+	return err
+}
+
+func (r *SQLiteRepository) GetForbiddenWordsByGroup(groupJID string) ([]ForbiddenWord, error) {
+	query := `SELECT id, group_jid, word, created_by, created_at FROM forbidden_words WHERE group_jid = ? ORDER BY created_at DESC`
+	rows, err := r.db.Query(query, groupJID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var words []ForbiddenWord
+	for rows.Next() {
+		var word ForbiddenWord
+		if err := rows.Scan(&word.ID, &word.GroupJID, &word.Word, &word.CreatedBy, &word.CreatedAt); err != nil {
+			return nil, err
+		}
+		words = append(words, word)
+	}
+	return words, nil
+}
+
+func (r *SQLiteRepository) DeleteForbiddenWord(id int) error {
+	query := `DELETE FROM forbidden_words WHERE id = ?`
+	_, err := r.db.Exec(query, id)
+	return err
+}
+
 
 // === UTILITY FUNCTIONS ===
 

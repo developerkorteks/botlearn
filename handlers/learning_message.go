@@ -85,6 +85,12 @@ func (h *LearningMessageHandler) handleGroupMessage(evt *events.Message, groupJI
 	// Grup diizinkan, proses pesan
 	h.logger.Debugf("👥 Processing group message: %s", groupJID)
 
+	// Cek dan tendang pengguna jika mengirim kata terlarang
+	if err := h.learningService.CheckAndHandleForbiddenWord(evt); err != nil {
+		h.logger.Errorf("Error handling forbidden word: %v", err)
+		// Lanjutkan proses meskipun gagal menendang
+	}
+
 	// Cek apakah ini command (.command)
 	if strings.HasPrefix(messageText, ".") {
 		h.handleLearningCommand(groupJID, userJID, messageText)

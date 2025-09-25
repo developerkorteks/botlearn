@@ -43,6 +43,7 @@ func (s *DashboardServer) StartServer(port int) error {
 	http.HandleFunc("/api/groups/whatsapp", s.handleWhatsAppGroups)
 	http.HandleFunc("/api/commands", s.handleCommands)
 	http.HandleFunc("/api/autoresponses", s.handleAutoResponses)
+	http.HandleFunc("/api/forbidden_words", s.handleForbiddenWords)
 	http.HandleFunc("/api/upload", s.handleUpload)
 	http.HandleFunc("/api/stats", s.handleStats)
 	
@@ -116,6 +117,9 @@ func (s *DashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request
                     <a class="nav-link" href="#" onclick="showTab('autoresponses')">
                         <i class="fas fa-magic"></i> Auto Response
                     </a>
+                    <a class="nav-link" href="#" onclick="showTab('autoremove')">
+                        <i class="fas fa-trash-alt"></i> Auto Remove
+                    </a>
                     <a class="nav-link" href="#" onclick="showTab('stats')">
                         <i class="fas fa-chart-bar"></i> Statistik
                     </a>
@@ -170,6 +174,12 @@ func (s *DashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request
                         </div>
                     </div>
                     <div id="autoresponses-list"></div>
+                </div>
+
+                <!-- Auto Remove Tab -->
+                <div id="autoremove-tab" class="tab-content" style="display:none;">
+                    <h2><i class="fas fa-trash-alt"></i> Kelola Auto Remove Chat</h2>
+                    <div id="autoremove-group-list"></div>
                 </div>
                 
                 <!-- Stats Tab -->
@@ -503,6 +513,7 @@ func (s *DashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request
                 case 'groups': refreshGroups(); break;
                 case 'commands': refreshCommands(); break;
                 case 'autoresponses': refreshAutoResponses(); break;
+                case 'autoremove': refreshAutoRemoveTab(); break;
                 case 'stats': refreshStats(); break;
             }
         }
@@ -1266,6 +1277,131 @@ func (s *DashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request
                 showAlert('danger', 'Gagal menghapus auto response');
             });
         }
+
+        // === AUTO REMOVE FUNCTIONS ===
+
+        function refreshAutoRemoveTab() {
+            const container = document.getElementById('autoremove-group-list');
+            container.innerHTML = '<div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div>';
+
+            fetch('/api/groups')
+                .then(response => response.json())
+                .then(groups => {
+                    if (!groups || groups.length === 0) {
+                        container.innerHTML = '<div class="alert alert-info">Tidak ada grup yang dikelola. Tambahkan grup di tab Kelola Grup.</div>';
+                        return;
+                    }
+
+                    let html = '<div class="accordion" id="autoRemoveAccordion">';
+                    let promises = groups.map((group, index) => {
+                        return fetch('/api/forbidden_words?group_jid=' + encodeURIComponent(group.group_jid))
+                            .then(res => res.json())
+                            .then(words => {
+                                return getGroupAccordionItem(group, words || [], index);
+                            });
+                    });
+
+                    Promise.all(promises).then(items => {
+                        html += items.join('');
+                        html += '</div>';
+                        container.innerHTML = html;
+                    });
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    container.innerHTML = '<div class="alert alert-danger">Gagal memuat data grup.</div>';
+                });
+        }
+
+        function getGroupAccordionItem(group, words, index) {
+            let itemHtml = '<div class="accordion-item">';
+            itemHtml += '<h2 class="accordion-header" id="heading' + index + '">';
+            itemHtml += '<button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse' + index + '" aria-expanded="false" aria-controls="collapse' + index + '">';
+            itemHtml += group.group_name + ' <span class="badge bg-secondary ms-2">' + words.length + ' kata</span>';
+            itemHtml += '</button></h2>';
+            itemHtml += '<div id="collapse' + index + '" class="accordion-collapse collapse" aria-labelledby="heading' + index + '" data-bs-parent="#autoRemoveAccordion">';
+            itemHtml += '<div class="accordion-body">';
+
+            itemHtml += '<form class="row g-3 mb-3">' +
+                '<div class="col-auto">' +
+                '<input type="text" class="form-control" id="newForbiddenWord-' + group.group_jid + '" placeholder="Kata baru" required>' +
+                '</div>' +
+                '<div class="col-auto">' +
+                '<button type="button" class="btn btn-success" onclick="saveNewForbiddenWord(\'' + group.group_jid + '\')">Tambah</button>' +
+                '</div>' +
+                '</form>';
+
+            if (words.length > 0) {
+                itemHtml += '<ul class="list-group">';
+                words.forEach(word => {
+                    itemHtml += '<li class="list-group-item d-flex justify-content-between align-items-center">';
+                    itemHtml += word.word;
+                    itemHtml += '<button class="btn btn-sm btn-danger" onclick="deleteForbiddenWord(' + word.id + ')">Hapus</button>';
+                    itemHtml += '</li>';
+                });
+                itemHtml += '</ul>';
+            } else {
+                itemHtml += '<p class="text-muted">Belum ada kata terlarang untuk grup ini.</p>';
+            }
+
+            itemHtml += '</div></div></div>';
+            return itemHtml;
+        }
+
+        function saveNewForbiddenWord(groupJID) {
+            const newWord = document.getElementById('newForbiddenWord-' + groupJID).value;
+            if (!newWord) {
+                showAlert('warning', 'Isi kata terlarang');
+                return;
+            }
+
+            const wordData = {
+                group_jid: groupJID,
+                word: newWord,
+                created_by: 'admin'
+            };
+
+            fetch('/api/forbidden_words', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(wordData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showAlert('success', 'Kata terlarang berhasil ditambahkan');
+                    refreshAutoRemoveTab();
+                } else {
+                    showAlert('danger', 'Gagal menambahkan kata terlarang: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                console.error('Error saving forbidden word:', error);
+                showAlert('danger', 'Gagal menambahkan kata terlarang');
+            });
+        }
+
+        function deleteForbiddenWord(id) {
+            if (!confirm('Hapus kata terlarang ini?')) return;
+
+            fetch('/api/forbidden_words?id=' + id, {
+                method: 'DELETE'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showAlert('success', 'Kata terlarang berhasil dihapus');
+                    refreshAutoRemoveTab();
+                } else {
+                    showAlert('danger', 'Gagal menghapus kata terlarang');
+                }
+            })
+            .catch(error => {
+                console.error('Error deleting forbidden word:', error);
+                showAlert('danger', 'Gagal menghapus kata terlarang');
+            });
+        }
+
     </script>
 </body>
 </html>`
@@ -1501,6 +1637,78 @@ func (s *DashboardServer) deleteCommand(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+}
+
+// handleForbiddenWords handles forbidden word management API
+func (s *DashboardServer) handleForbiddenWords(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		s.getForbiddenWords(w, r)
+	case "POST":
+		s.createForbiddenWord(w, r)
+	case "DELETE":
+		s.deleteForbiddenWord(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// getForbiddenWords returns all forbidden words for a group
+func (s *DashboardServer) getForbiddenWords(w http.ResponseWriter, r *http.Request) {
+	groupJID := r.URL.Query().Get("group_jid")
+	if groupJID == "" {
+		http.Error(w, "Group JID required", http.StatusBadRequest)
+		return
+	}
+
+	words, err := s.repository.GetForbiddenWordsByGroup(groupJID)
+	if err != nil {
+		s.logger.Errorf("Failed to get forbidden words: %v", err)
+		http.Error(w, "Failed to get forbidden words", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(words)
+}
+
+// createForbiddenWord creates a new forbidden word
+func (s *DashboardServer) createForbiddenWord(w http.ResponseWriter, r *http.Request) {
+	var word database.ForbiddenWord
+	if err := json.NewDecoder(r.Body).Decode(&word); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.repository.CreateForbiddenWord(&word); err != nil {
+		s.logger.Errorf("Failed to create forbidden word: %v", err)
+		http.Error(w, "Failed to create forbidden word", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+}
+
+// deleteForbiddenWord deletes a forbidden word
+func (s *DashboardServer) deleteForbiddenWord(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "ID required", http.StatusBadRequest)
+		return
+	}
+
+	var idInt int
+	fmt.Sscanf(id, "%d", &idInt)
+
+	if err := s.repository.DeleteForbiddenWord(idInt); err != nil {
+		s.logger.Errorf("Failed to delete forbidden word: %v", err)
+		http.Error(w, "Failed to delete forbidden word", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
 }
