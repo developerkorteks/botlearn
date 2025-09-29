@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"go.mau.fi/whatsmeow"
@@ -125,12 +126,18 @@ func main() {
 	
 	// STEP 11: Start Dashboard Server
 	logger.Info("Starting Dashboard Server...")
+	portStr := os.Getenv("PORT")
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port == 0 {
+		port = 1462 // Default port
+	}
+
 	go func() {
-		if err := dashboardServer.StartServer(42981); err != nil {
+		if err := dashboardServer.StartServer(port); err != nil {
 			logger.Errorf("Dashboard server error: %v", err)
 		}
 	}()
-	logger.Success("Dashboard server started on http://localhost:42981")
+	logger.Successf("Dashboard server started on http://localhost:%d", port)
 	
 	// STEP 12: Connect ke WhatsApp
 	if client.Store.ID == nil {
@@ -174,7 +181,7 @@ func main() {
 	
 	// STEP 15: Tampilkan informasi learning system
 	logger.Success("🚀 Learning Bot System is READY!")
-	logger.Info("Dashboard: http://localhost:42981")
+	logger.Infof("Dashboard: http://localhost:%d", port)
 	logger.Info("Admin commands: .addgroup, .removegroup, .listgroups, .stats, .logs")
 	logger.Info("Learning commands: .help, .info, .listbugs (and more via dashboard)")
 	
