@@ -287,7 +287,7 @@ func (h *LearningMessageHandler) handleXRayConverterCommand(groupJID, userJID, c
 	h.sendConversionResult(groupJID, result, commandName)
 }
 
-// sendConversionResult mengirim hasil conversion ke grup
+// sendConversionResult mengirim hasil conversion ke grup (2 pesan terpisah)
 func (h *LearningMessageHandler) sendConversionResult(groupJID string, result *database.ModifiedXRayConfig, commandName string) {
 	// Parse JID untuk chat target
 	chatJID, err := types.ParseJID(groupJID)
@@ -296,13 +296,7 @@ func (h *LearningMessageHandler) sendConversionResult(groupJID string, result *d
 		return
 	}
 	
-	// Build response message
-	var responseBuilder strings.Builder
-	
-	// Header dengan emoji dan info
-	responseBuilder.WriteString("✅ **Conversion Success!**\n\n")
-	
-	// Info converter
+	// Get converter info
 	converter, _ := h.xrayConverterService.GetAllConverters()
 	var displayName string
 	for _, conv := range converter {
@@ -315,57 +309,78 @@ func (h *LearningMessageHandler) sendConversionResult(groupJID string, result *d
 		displayName = strings.ToUpper(commandName)
 	}
 	
-	responseBuilder.WriteString(fmt.Sprintf("🏷️ **Converter:** %s\n", displayName))
-	responseBuilder.WriteString(fmt.Sprintf("🔧 **Type:** %s\n", strings.ToUpper(result.ModifyType)))
-	responseBuilder.WriteString(fmt.Sprintf("📡 **Protocol:** %s | **Network:** %s | **TLS:** %t\n\n", 
+	// === PESAN 1: INFO & DETAILS ===
+	var infoBuilder strings.Builder
+	
+	// Header dengan emoji dan info
+	infoBuilder.WriteString("✅ *Conversion Success!*\n\n")
+	infoBuilder.WriteString(fmt.Sprintf("🏷️ *Converter:* %s\n", displayName))
+	infoBuilder.WriteString(fmt.Sprintf("🔧 *Type:* %s\n", strings.ToUpper(result.ModifyType)))
+	infoBuilder.WriteString(fmt.Sprintf("📡 *Protocol:* %s | *Network:* %s | *TLS:* %s\n\n", 
 		strings.ToUpper(result.DetectedConfig.Protocol), 
 		strings.ToUpper(result.DetectedConfig.Network),
-		result.DetectedConfig.TLS))
+		func() string { if result.DetectedConfig.TLS { return "Yes" } else { return "No" } }()))
 	
-	// Modification details
-	responseBuilder.WriteString("🔍 **Modification Details:**\n")
-	responseBuilder.WriteString(fmt.Sprintf("• Original Server: `%s`\n", result.DetectedConfig.Server))
-	responseBuilder.WriteString(fmt.Sprintf("• Bug Host: `%s`\n", result.BugHost))
+	// Modification details dengan format rapi
+	infoBuilder.WriteString("🔍 *Modification Details:*\n")
+	infoBuilder.WriteString(fmt.Sprintf("• Original Server: %s\n", result.DetectedConfig.Server))
+	infoBuilder.WriteString(fmt.Sprintf("• Bug Host: %s\n", result.BugHost))
 	
 	switch result.ModifyType {
 	case "wildcard":
-		responseBuilder.WriteString(fmt.Sprintf("• Modified Server: `%s`\n", result.ModifiedServer))
-		responseBuilder.WriteString(fmt.Sprintf("• Modified Host: `%s`\n", result.ModifiedHost))
+		infoBuilder.WriteString(fmt.Sprintf("• Modified Server: %s\n", result.ModifiedServer))
+		infoBuilder.WriteString(fmt.Sprintf("• Modified Host: %s\n", result.ModifiedHost))
 		if result.DetectedConfig.TLS {
-			responseBuilder.WriteString(fmt.Sprintf("• Modified SNI: `%s`\n", result.ModifiedSNI))
+			infoBuilder.WriteString(fmt.Sprintf("• Modified SNI: %s\n", result.ModifiedSNI))
 		}
 	case "sni":
-		responseBuilder.WriteString(fmt.Sprintf("• Modified SNI: `%s`\n", result.ModifiedSNI))
-		responseBuilder.WriteString("• Server & Host: *unchanged*\n")
+		infoBuilder.WriteString(fmt.Sprintf("• Modified SNI: %s\n", result.ModifiedSNI))
+		infoBuilder.WriteString("• Server & Host: _unchanged_\n")
 	case "ws", "grpc":
-		responseBuilder.WriteString(fmt.Sprintf("• Modified Server: `%s`\n", result.ModifiedServer))
-		responseBuilder.WriteString("• Host & SNI: *unchanged*\n")
+		infoBuilder.WriteString(fmt.Sprintf("• Modified Server: %s\n", result.ModifiedServer))
+		infoBuilder.WriteString("• Host & SNI: _unchanged_\n")
 	}
 	
-	responseBuilder.WriteString("\n📱 **Modified Link:**\n")
-	responseBuilder.WriteString(fmt.Sprintf("`%s`\n\n", result.ModifiedLink))
+	// YAML Configuration dengan format rapi
+	infoBuilder.WriteString("\n📁 *YAML Configuration:*\n")
+	infoBuilder.WriteString("```yaml\n")
+	infoBuilder.WriteString(result.YAMLConfig)
+	infoBuilder.WriteString("```\n\n")
 	
-	responseBuilder.WriteString("📁 **YAML Configuration:**\n")
-	responseBuilder.WriteString("```yaml\n")
-	responseBuilder.WriteString(result.YAMLConfig)
-	responseBuilder.WriteString("```\n\n")
+	infoBuilder.WriteString("💡 *Usage Instructions:*\n")
+	infoBuilder.WriteString("1. Copy modified link untuk V2Ray/Xray\n")
+	infoBuilder.WriteString("2. Copy YAML config untuk Clash/OpenClash\n")
+	infoBuilder.WriteString("3. Restart aplikasi setelah config\n\n")
+	infoBuilder.WriteString("📱 _Modified link akan dikirim di pesan berikutnya untuk kemudahan copy..._")
 	
-	responseBuilder.WriteString("💡 **Usage:**\n")
-	responseBuilder.WriteString("1. Copy modified link untuk V2Ray/Xray\n")
-	responseBuilder.WriteString("2. Copy YAML config untuk Clash/OpenClash\n")
-	responseBuilder.WriteString("3. Restart aplikasi setelah config")
-	
-	// Send message
-	responseText := responseBuilder.String()
-	msg := &waProto.Message{
-		Conversation: &responseText,
+	// Kirim pesan 1
+	infoText := infoBuilder.String()
+	msg1 := &waProto.Message{
+		Conversation: &infoText,
 	}
 	
-	_, err = h.client.SendMessage(context.Background(), chatJID, msg)
+	_, err = h.client.SendMessage(context.Background(), chatJID, msg1)
 	if err != nil {
-		h.logger.Errorf("Failed to send conversion result: %v", err)
+		h.logger.Errorf("Failed to send conversion info: %v", err)
+		return
+	}
+	
+	// Delay sedikit sebelum kirim pesan kedua
+	time.Sleep(500 * time.Millisecond)
+	
+	// === PESAN 2: MODIFIED LINK ONLY ===
+	linkText := result.ModifiedLink
+	
+	// Kirim pesan 2
+	msg2 := &waProto.Message{
+		Conversation: &linkText,
+	}
+	
+	_, err = h.client.SendMessage(context.Background(), chatJID, msg2)
+	if err != nil {
+		h.logger.Errorf("Failed to send conversion link: %v", err)
 	} else {
-		h.logger.Infof("✅ Conversion result sent to %s", groupJID)
+		h.logger.Infof("✅ Conversion result sent to %s (2 messages)", groupJID)
 	}
 }
 
