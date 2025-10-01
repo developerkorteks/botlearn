@@ -481,4 +481,46 @@ CREATE TABLE IF NOT EXISTS forbidden_words (
 );
 
 CREATE INDEX IF NOT EXISTS idx_forbidden_words_group_jid ON forbidden_words(group_jid);
+
+-- XRay Converters table
+CREATE TABLE IF NOT EXISTS xray_converters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    command_name TEXT UNIQUE NOT NULL,
+    display_name TEXT NOT NULL,
+    bug_host TEXT NOT NULL,
+    modify_type TEXT NOT NULL CHECK(modify_type IN ('wildcard', 'sni', 'ws', 'grpc', 'custom')),
+    server_template TEXT,
+    host_template TEXT,
+    sni_template TEXT,
+    path_template TEXT,
+    grpc_service_name TEXT,
+    port_override INTEGER,
+    is_active BOOLEAN DEFAULT 1,
+    usage_count INTEGER DEFAULT 0,
+    created_by TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- XRay Conversion Logs table
+CREATE TABLE IF NOT EXISTS xray_conversion_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    converter_name TEXT NOT NULL,
+    user_jid TEXT NOT NULL,
+    group_jid TEXT,
+    original_protocol TEXT NOT NULL,
+    original_network TEXT,
+    original_server TEXT NOT NULL,
+    modified_server TEXT NOT NULL,
+    success BOOLEAN NOT NULL,
+    error_message TEXT,
+    used_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for XRay tables
+CREATE INDEX IF NOT EXISTS idx_xray_converters_command_name ON xray_converters(command_name);
+CREATE INDEX IF NOT EXISTS idx_xray_converters_is_active ON xray_converters(is_active);
+CREATE INDEX IF NOT EXISTS idx_xray_conversion_logs_converter_name ON xray_conversion_logs(converter_name);
+CREATE INDEX IF NOT EXISTS idx_xray_conversion_logs_used_at ON xray_conversion_logs(used_at);
+CREATE INDEX IF NOT EXISTS idx_xray_conversion_logs_user_jid ON xray_conversion_logs(user_jid);
 `

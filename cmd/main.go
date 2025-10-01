@@ -77,8 +77,19 @@ func main() {
 	// Setup learning service
 	learningService := services.NewLearningService(client, learningRepo, logger)
 	
+	// Setup XRay converter service
+	xrayConverterService := services.NewXRayConverterService(learningRepo, logger)
+	
+	// Insert default XRay converters
+	logger.Info("Setting up default XRay converters...")
+	if err := database.InsertDefaultConverters(learningRepo); err != nil {
+		logger.Errorf("Failed to insert default converters: %v", err)
+	} else {
+		logger.Success("Default XRay converters setup complete!")
+	}
+	
 	// Setup learning message handler
-	learningMessageHandler := handlers.NewLearningMessageHandler(client, learningService, logger, promoteCfg.AdminNumbers)
+	learningMessageHandler := handlers.NewLearningMessageHandler(client, learningService, xrayConverterService, logger, promoteCfg.AdminNumbers)
 	
 	// Setup dashboard server
 	dashboardServer := web.NewDashboardServer(learningRepo, logger, promoteCfg.AdminNumbers)
@@ -184,6 +195,11 @@ func main() {
 	logger.Infof("Dashboard: http://localhost:%d", port)
 	logger.Info("Admin commands: .addgroup, .removegroup, .listgroups, .stats, .logs")
 	logger.Info("Learning commands: .help, .info, .listbugs (and more via dashboard)")
+	
+	// STEP 16: Tampilkan informasi XRay converter
+	logger.Success("🔄 XRay Converter System is READY!")
+	logger.Info("Converter commands: .convertbizz, .convertinsta, .convertnetflix, .convertgopay, .convertgrpc")
+	logger.Info("Usage: .convertbizz vmess://xxx | .convertinsta trojan://xxx")
 	
 	// STEP 16: Wait for interrupt signal (Ctrl+C)
 	c := make(chan os.Signal, 1)

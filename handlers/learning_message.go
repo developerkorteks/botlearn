@@ -5,36 +5,45 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 
+	"github.com/nabilulilalbab/promote/database"
 	"github.com/nabilulilalbab/promote/services"
 	"github.com/nabilulilalbab/promote/utils"
 )
 
 // LearningMessageHandler menangani pesan untuk bot pembelajaran
 type LearningMessageHandler struct {
-	client          *whatsmeow.Client
-	learningService *services.LearningService
-	logger          *utils.Logger
-	adminNumbers    []string // Daftar nomor admin
+	client             *whatsmeow.Client
+	learningService    *services.LearningService
+	xrayConverterService *services.XRayConverterService
+	logger             *utils.Logger
+	adminNumbers       []string // Daftar nomor admin
+	
+	// Rate limiting: map[userJID]lastCommandTime
+	commandCooldown    map[string]time.Time
 }
 
 // NewLearningMessageHandler membuat handler baru untuk learning bot
 func NewLearningMessageHandler(
 	client *whatsmeow.Client,
 	learningService *services.LearningService,
+	xrayConverterService *services.XRayConverterService,
 	logger *utils.Logger,
 	adminNumbers []string,
 ) *LearningMessageHandler {
 	return &LearningMessageHandler{
-		client:          client,
-		learningService: learningService,
-		logger:          logger,
-		adminNumbers:    adminNumbers,
+		client:             client,
+		learningService:    learningService,
+		xrayConverterService: xrayConverterService,
+		logger:             logger,
+		adminNumbers:       adminNumbers,
+		commandCooldown:    make(map[string]time.Time),
 	}
 }
 
@@ -48,10 +57,10 @@ func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
 	// STEP 2: Ambil teks dari pesan
 	messageText := h.getMessageText(evt.Message)
 	if messageText == "" {
-		return // Bukan pesan teks, skip
+		return // Skip jika bukan pesan teks
 	}
 
-	// STEP 3: Identifikasi jenis chat dan info
+	// STEP 3: Identifikasi chat type dan IDs
 	isGroup := evt.Info.Chat.Server == types.GroupServer
 	groupJID := evt.Info.Chat.String()
 	userJID := evt.Info.Sender.String()
@@ -126,9 +135,30 @@ func (h *LearningMessageHandler) handlePersonalMessage(evt *events.Message, user
 
 // handleLearningCommand memproses command pembelajaran
 func (h *LearningMessageHandler) handleLearningCommand(groupJID, userJID, command string) {
+	// Rate limiting: 1 command per 3 seconds per user
+	cooldownKey := fmt.Sprintf("%s:%s", userJID, groupJID)
+	now := time.Now()
+	
+	if lastTime, exists := h.commandCooldown[cooldownKey]; exists {
+		if now.Sub(lastTime) < 3*time.Second {
+			h.logger.Debugf("🕒 Rate limit: User %s in cooldown, ignoring command: %s", userJID, command)
+			return
+		}
+	}
+	
+	// Update cooldown time
+	h.commandCooldown[cooldownKey] = now
+	
 	h.logger.Infof("🔧 Processing learning command: %s | Group: %s | User: %s",
 		command, groupJID, userJID)
 
+	// Cek apakah ini XRay converter command
+	if h.isXRayConverterCommand(command) {
+		h.handleXRayConverterCommand(groupJID, userJID, command)
+		return
+	}
+
+	// Process normal learning command
 	err := h.learningService.ProcessCommand(groupJID, userJID, command)
 	if err != nil {
 		h.logger.Errorf("Failed to process command %s: %v", command, err)
@@ -146,343 +176,427 @@ func (h *LearningMessageHandler) handleAutoResponse(groupJID, userJID, messageTe
 	}
 }
 
-// handleAdminCommand memproses command admin via personal chat
+// handleAdminCommand menangani command admin dari personal chat
 func (h *LearningMessageHandler) handleAdminCommand(evt *events.Message, userJID, command string) {
-	h.logger.Infof("👑 Processing admin command: %s | Admin: %s", command, userJID)
-
-	lowerCommand := strings.ToLower(strings.TrimSpace(command))
-
-	switch {
-	case strings.HasPrefix(lowerCommand, ".addgroup"):
-		h.handleAddGroup(evt, command)
-
-	case strings.HasPrefix(lowerCommand, ".removegroup"):
-		h.handleRemoveGroup(evt, command)
-
-	case strings.HasPrefix(lowerCommand, ".listgroups"):
-		h.handleListGroups(evt)
-
-	case strings.HasPrefix(lowerCommand, ".getgroups"):
-		h.handleGetGroups(evt)
-
-	case strings.HasPrefix(lowerCommand, ".groups") || strings.HasPrefix(lowerCommand, ".allgroups"):
-		h.handleGetAllGroups(evt)
-
-	case strings.HasPrefix(lowerCommand, ".stats"):
-		h.handleStats(evt, command)
-
-	case strings.HasPrefix(lowerCommand, ".logs"):
-		h.handleLogs(evt, command)
-
-	case lowerCommand == ".getgroups" || lowerCommand == ".allgroups":
-		h.handleGetAllGroups(evt)
-
-	case lowerCommand == ".adminhelp" || lowerCommand == ".help":
-		h.sendAdminHelp(evt.Info.Chat)
-
-	default:
-		h.sendUnknownCommand(evt.Info.Chat)
+	// Rate limiting untuk admin: 1 command per 2 seconds
+	cooldownKey := fmt.Sprintf("admin:%s", userJID)
+	now := time.Now()
+	
+	if lastTime, exists := h.commandCooldown[cooldownKey]; exists {
+		if now.Sub(lastTime) < 2*time.Second {
+			h.logger.Debugf("🕒 Admin rate limit: User %s in cooldown, ignoring command: %s", userJID, command)
+			return
+		}
 	}
+	
+	// Update cooldown time
+	h.commandCooldown[cooldownKey] = now
+	
+	h.logger.Infof("🔧 Processing admin command: %s | User: %s", command, userJID)
+	
+	// Cek apakah ini XRay converter command
+	if h.isXRayConverterCommand(command) {
+		h.handleXRayConverterCommand(evt.Info.Chat.String(), userJID, command)
+		return
+	}
+	
+	// Command untuk mengelola grup pembelajaran
+	switch {
+	case strings.HasPrefix(command, ".addgroup"):
+		h.handleAddGroupCommand(evt, userJID, command)
+	case strings.HasPrefix(command, ".removegroup"):
+		h.handleRemoveGroupCommand(evt, userJID, command)
+	case strings.HasPrefix(command, ".listgroups"):
+		h.handleListGroupsCommand(evt, userJID)
+	case strings.HasPrefix(command, ".stats"):
+		h.handleStatsCommand(evt, userJID)
+	case strings.HasPrefix(command, ".logs"):
+		h.handleLogsCommand(evt, userJID)
+	case command == ".help":
+		h.sendAdminHelp(evt.Info.Chat)
+	default:
+		// Try processing as learning command
+		err := h.learningService.ProcessCommand(evt.Info.Chat.String(), userJID, command)
+		if err != nil {
+			h.logger.Errorf("Failed to process admin command %s: %v", command, err)
+			h.sendAdminMessage(evt.Info.Chat, fmt.Sprintf("❌ Command tidak dikenali: %s\n\nKetik .help untuk bantuan.", command))
+		}
+	}
+}
+
+// === XRAY CONVERTER HANDLERS ===
+
+// isXRayConverterCommand cek apakah command adalah XRay converter
+func (h *LearningMessageHandler) isXRayConverterCommand(command string) bool {
+	// Parse command untuk extract nama converter dan XRay link
+	parts := strings.Fields(command)
+	if len(parts) < 2 {
+		return false
+	}
+	
+	commandName := parts[0]
+	
+	// Cek apakah command dimulai dengan .convert atau custom command yang ada di database
+	if strings.HasPrefix(commandName, ".convert") {
+		return true
+	}
+	
+	// Cek di database apakah ada converter dengan nama ini
+	converterName := strings.TrimPrefix(commandName, ".")
+	converter, err := h.xrayConverterService.GetAllConverters()
+	if err != nil {
+		return false
+	}
+	
+	for _, conv := range converter {
+		if conv.CommandName == converterName && conv.IsActive {
+			return true
+		}
+	}
+	
+	return false
+}
+
+// handleXRayConverterCommand menangani XRay converter command
+func (h *LearningMessageHandler) handleXRayConverterCommand(groupJID, userJID, command string) {
+	// Parse command: .convertbizz vmess://xxx
+	parts := strings.Fields(command)
+	if len(parts) < 2 {
+		h.sendErrorMessage(groupJID, "❌ Format salah!\n\nContoh: .convertbizz vmess://xxx")
+		return
+	}
+	
+	commandName := strings.TrimPrefix(parts[0], ".")
+	xrayLink := parts[1]
+	
+	h.logger.Infof("🔄 Processing XRay conversion: %s | Link: %s", commandName, h.truncateString(xrayLink, 50))
+	
+	// Process conversion
+	result, err := h.xrayConverterService.ProcessConversion(commandName, xrayLink, userJID, groupJID)
+	if err != nil {
+		h.logger.Errorf("XRay conversion failed: %v", err)
+		
+		errorMsg := fmt.Sprintf("❌ **Conversion Failed!**\n\n🔧 **Command:** %s\n📝 **Error:** %s\n\n💡 **Tips:**\n• Pastikan link XRay valid\n• Cek format: vmess://, vless://, trojan://\n• Command tersedia: %s", 
+			commandName, err.Error(), h.getAvailableConverters())
+		
+		h.sendErrorMessage(groupJID, errorMsg)
+		return
+	}
+	
+	// Send success response
+	h.sendConversionResult(groupJID, result, commandName)
+}
+
+// sendConversionResult mengirim hasil conversion ke grup
+func (h *LearningMessageHandler) sendConversionResult(groupJID string, result *database.ModifiedXRayConfig, commandName string) {
+	// Parse JID untuk chat target
+	chatJID, err := types.ParseJID(groupJID)
+	if err != nil {
+		h.logger.Errorf("Failed to parse group JID: %v", err)
+		return
+	}
+	
+	// Build response message
+	var responseBuilder strings.Builder
+	
+	// Header dengan emoji dan info
+	responseBuilder.WriteString("✅ **Conversion Success!**\n\n")
+	
+	// Info converter
+	converter, _ := h.xrayConverterService.GetAllConverters()
+	var displayName string
+	for _, conv := range converter {
+		if conv.CommandName == commandName {
+			displayName = conv.DisplayName
+			break
+		}
+	}
+	if displayName == "" {
+		displayName = strings.ToUpper(commandName)
+	}
+	
+	responseBuilder.WriteString(fmt.Sprintf("🏷️ **Converter:** %s\n", displayName))
+	responseBuilder.WriteString(fmt.Sprintf("🔧 **Type:** %s\n", strings.ToUpper(result.ModifyType)))
+	responseBuilder.WriteString(fmt.Sprintf("📡 **Protocol:** %s | **Network:** %s | **TLS:** %t\n\n", 
+		strings.ToUpper(result.DetectedConfig.Protocol), 
+		strings.ToUpper(result.DetectedConfig.Network),
+		result.DetectedConfig.TLS))
+	
+	// Modification details
+	responseBuilder.WriteString("🔍 **Modification Details:**\n")
+	responseBuilder.WriteString(fmt.Sprintf("• Original Server: `%s`\n", result.DetectedConfig.Server))
+	responseBuilder.WriteString(fmt.Sprintf("• Bug Host: `%s`\n", result.BugHost))
+	
+	switch result.ModifyType {
+	case "wildcard":
+		responseBuilder.WriteString(fmt.Sprintf("• Modified Server: `%s`\n", result.ModifiedServer))
+		responseBuilder.WriteString(fmt.Sprintf("• Modified Host: `%s`\n", result.ModifiedHost))
+		if result.DetectedConfig.TLS {
+			responseBuilder.WriteString(fmt.Sprintf("• Modified SNI: `%s`\n", result.ModifiedSNI))
+		}
+	case "sni":
+		responseBuilder.WriteString(fmt.Sprintf("• Modified SNI: `%s`\n", result.ModifiedSNI))
+		responseBuilder.WriteString("• Server & Host: *unchanged*\n")
+	case "ws", "grpc":
+		responseBuilder.WriteString(fmt.Sprintf("• Modified Server: `%s`\n", result.ModifiedServer))
+		responseBuilder.WriteString("• Host & SNI: *unchanged*\n")
+	}
+	
+	responseBuilder.WriteString("\n📱 **Modified Link:**\n")
+	responseBuilder.WriteString(fmt.Sprintf("`%s`\n\n", result.ModifiedLink))
+	
+	responseBuilder.WriteString("📁 **YAML Configuration:**\n")
+	responseBuilder.WriteString("```yaml\n")
+	responseBuilder.WriteString(result.YAMLConfig)
+	responseBuilder.WriteString("```\n\n")
+	
+	responseBuilder.WriteString("💡 **Usage:**\n")
+	responseBuilder.WriteString("1. Copy modified link untuk V2Ray/Xray\n")
+	responseBuilder.WriteString("2. Copy YAML config untuk Clash/OpenClash\n")
+	responseBuilder.WriteString("3. Restart aplikasi setelah config")
+	
+	// Send message
+	responseText := responseBuilder.String()
+	msg := &waProto.Message{
+		Conversation: &responseText,
+	}
+	
+	_, err = h.client.SendMessage(context.Background(), chatJID, msg)
+	if err != nil {
+		h.logger.Errorf("Failed to send conversion result: %v", err)
+	} else {
+		h.logger.Infof("✅ Conversion result sent to %s", groupJID)
+	}
+}
+
+// sendErrorMessage mengirim pesan error
+func (h *LearningMessageHandler) sendErrorMessage(groupJID, errorMsg string) {
+	chatJID, err := types.ParseJID(groupJID)
+	if err != nil {
+		h.logger.Errorf("Failed to parse group JID: %v", err)
+		return
+	}
+	
+	msg := &waProto.Message{
+		Conversation: &errorMsg,
+	}
+	
+	h.client.SendMessage(context.Background(), chatJID, msg)
+}
+
+// getAvailableConverters mendapatkan daftar converter yang tersedia
+func (h *LearningMessageHandler) getAvailableConverters() string {
+	converters, err := h.xrayConverterService.GetActiveConverters()
+	if err != nil || len(converters) == 0 {
+		return "Tidak ada converter aktif"
+	}
+	
+	var available []string
+	for _, conv := range converters {
+		available = append(available, fmt.Sprintf(".%s", conv.CommandName))
+	}
+	
+	return strings.Join(available, ", ")
 }
 
 // === ADMIN COMMAND HANDLERS ===
 
-// handleAddGroup menangani command .addgroup
-func (h *LearningMessageHandler) handleAddGroup(evt *events.Message, command string) {
-	// Format: .addgroup <group_jid> <group_name>
-	parts := strings.Fields(command)
-	if len(parts) < 3 {
-		h.sendTextToChat(evt.Info.Chat, `❌ *FORMAT SALAH*
-
-Format: .addgroup <group_jid> <group_name>
-
-Contoh:
-.addgroup 120363123456789@g.us Grup Belajar Coding`)
-		return
-	}
-
-	groupJID := parts[1]
-	groupName := strings.Join(parts[2:], " ")
-
-	err := h.learningService.AddAllowedGroup(groupJID, groupName, evt.Info.Sender.User)
-	if err != nil {
-		h.sendTextToChat(evt.Info.Chat, fmt.Sprintf("❌ *GAGAL*\n\nError: %v", err))
-		return
-	}
-
-	response := fmt.Sprintf(`✅ *GRUP BERHASIL DITAMBAHKAN*
-
-📱 *JID:* %s
-👥 *Nama:* %s
-🎯 *Status:* Aktif
-
-Bot sekarang bisa digunakan di grup tersebut!`, groupJID, groupName)
-
-	h.sendTextToChat(evt.Info.Chat, response)
-}
-
-// handleRemoveGroup menangani command .removegroup
-func (h *LearningMessageHandler) handleRemoveGroup(evt *events.Message, command string) {
-	// Format: .removegroup <group_jid>
-	parts := strings.Fields(command)
-	if len(parts) < 2 {
-		h.sendTextToChat(evt.Info.Chat, `❌ *FORMAT SALAH*
-
-Format: .removegroup <group_jid>
-
-Contoh:
-.removegroup 120363123456789@g.us`)
-		return
-	}
-
-	groupJID := parts[1]
-
-	err := h.learningService.RemoveAllowedGroup(groupJID)
-	if err != nil {
-		h.sendTextToChat(evt.Info.Chat, fmt.Sprintf("❌ *GAGAL*\n\nError: %v", err))
-		return
-	}
-
-	response := fmt.Sprintf(`✅ *GRUP BERHASIL DINONAKTIFKAN*
-
-📱 *JID:* %s
-🎯 *Status:* Tidak aktif
-
-Bot tidak akan merespon di grup tersebut lagi.`, groupJID)
-
-	h.sendTextToChat(evt.Info.Chat, response)
-}
-
-// handleListGroups menangani command .listgroups
-func (h *LearningMessageHandler) handleListGroups(evt *events.Message) {
-	groups, err := h.learningService.GetAllowedGroups()
-	if err != nil {
-		h.sendTextToChat(evt.Info.Chat, fmt.Sprintf("❌ *GAGAL*\n\nError: %v", err))
-		return
-	}
-
-	if len(groups) == 0 {
-		h.sendTextToChat(evt.Info.Chat, `ℹ️ *TIDAK ADA GRUP*
-
-Belum ada grup yang diaktifkan untuk bot pembelajaran.
-Gunakan .addgroup untuk menambahkan grup.`)
-		return
-	}
-
-	response := `📋 *DAFTAR GRUP PEMBELAJARAN*
+// sendAdminHelp mengirim bantuan untuk admin
+func (h *LearningMessageHandler) sendAdminHelp(chatJID types.JID) {
+	helpText := `🤖 **BANTUAN ADMIN BOT PEMBELAJARAN** 🤖
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-`
+           **COMMAND MANAGEMENT GRUP**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+📋 **Group Management:**
+• .addgroup [JID] [Nama] - Tambah grup ke whitelist
+• .removegroup [JID] - Hapus grup dari whitelist
+• .listgroups - List semua grup yang diizinkan
+
+📊 **Statistics:**
+• .stats - Statistik penggunaan bot
+• .logs - Log aktivitas terakhir
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+           **XRAY CONVERTER COMMANDS**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔄 **Converter Commands:**
+• .convertbizz [vmess://xxx] - XL-Line-WC (Wildcard)
+• .convertinsta [vmess://xxx] - XL-Instagram-SNI 
+• .convertnetflix [vmess://xxx] - XL-Netflix-WS
+• .convertgopay [vmess://xxx] - XL-Gopay-Midtrans-WC
+• .convertgrpc [vmess://xxx] - Generic-gRPC
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+           **LEARNING COMMANDS**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📚 **Default Commands:**
+• .help - Bantuan umum
+• .info - Info tentang bot
+• .listbugs - List bug server VPN
+
+💡 **Dashboard:** http://localhost:1462
+🌐 **Manage via web:** Groups, Commands, Auto Response
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**Bot siap melayani!** 🚀`
+
+	h.sendAdminMessage(chatJID, helpText)
+}
+
+// sendAdminMessage mengirim pesan ke admin
+func (h *LearningMessageHandler) sendAdminMessage(chatJID types.JID, message string) {
+	msg := &waProto.Message{
+		Conversation: &message,
+	}
+	
+	_, err := h.client.SendMessage(context.Background(), chatJID, msg)
+	if err != nil {
+		h.logger.Errorf("Failed to send admin message: %v", err)
+	}
+}
+
+// handleAddGroupCommand menangani command untuk menambah grup
+func (h *LearningMessageHandler) handleAddGroupCommand(evt *events.Message, userJID, command string) {
+	// Parse: .addgroup 120363420243864186@g.us Grup Test
+	parts := strings.Fields(command)
+	if len(parts) < 3 {
+		h.sendAdminMessage(evt.Info.Chat, "❌ Format salah!\n\nContoh: .addgroup 120363420243864186@g.us Grup Pembelajaran")
+		return
+	}
+	
+	groupJID := parts[1]
+	groupName := strings.Join(parts[2:], " ")
+	
+	err := h.learningService.AddAllowedGroup(groupJID, groupName, userJID)
+	if err != nil {
+		h.logger.Errorf("Failed to add group: %v", err)
+		h.sendAdminMessage(evt.Info.Chat, fmt.Sprintf("❌ Gagal menambah grup: %v", err))
+		return
+	}
+	
+	h.sendAdminMessage(evt.Info.Chat, fmt.Sprintf("✅ Grup berhasil ditambahkan!\n\n📋 **Grup:** %s\n🆔 **JID:** %s\n\nBot sekarang aktif di grup tersebut.", groupName, groupJID))
+}
+
+// handleRemoveGroupCommand menangani command untuk menghapus grup
+func (h *LearningMessageHandler) handleRemoveGroupCommand(evt *events.Message, userJID, command string) {
+	// Parse: .removegroup 120363420243864186@g.us
+	parts := strings.Fields(command)
+	if len(parts) < 2 {
+		h.sendAdminMessage(evt.Info.Chat, "❌ Format salah!\n\nContoh: .removegroup 120363420243864186@g.us")
+		return
+	}
+	
+	groupJID := parts[1]
+	
+	err := h.learningService.RemoveAllowedGroup(groupJID)
+	if err != nil {
+		h.logger.Errorf("Failed to remove group: %v", err)
+		h.sendAdminMessage(evt.Info.Chat, fmt.Sprintf("❌ Gagal menghapus grup: %v", err))
+		return
+	}
+	
+	h.sendAdminMessage(evt.Info.Chat, fmt.Sprintf("✅ Grup berhasil dihapus!\n\n🆔 **JID:** %s\n\nBot tidak lagi aktif di grup tersebut.", groupJID))
+}
+
+// handleListGroupsCommand menangani command untuk list grup
+func (h *LearningMessageHandler) handleListGroupsCommand(evt *events.Message, userJID string) {
+	groups, err := h.learningService.GetAllowedGroups()
+	if err != nil {
+		h.logger.Errorf("Failed to get groups: %v", err)
+		h.sendAdminMessage(evt.Info.Chat, "❌ Gagal mengambil daftar grup")
+		return
+	}
+	
+	if len(groups) == 0 {
+		h.sendAdminMessage(evt.Info.Chat, "📋 Belum ada grup yang diizinkan.\n\nGunakan .addgroup untuk menambah grup.")
+		return
+	}
+	
+	var response strings.Builder
+	response.WriteString("📋 **DAFTAR GRUP YANG DIIZINKAN**\n\n")
+	
+	activeCount := 0
 	for i, group := range groups {
 		status := "✅ Aktif"
 		if !group.IsActive {
-			status = "❌ Tidak aktif"
+			status = "❌ Nonaktif"
+		} else {
+			activeCount++
 		}
-
-		response += fmt.Sprintf(`
-%d. *%s*
-   📱 JID: %s
-   🎯 Status: %s
-   📅 Dibuat: %s`,
-			i+1, group.GroupName, group.GroupJID, status,
-			group.CreatedAt.Format("02/01/2006 15:04"))
+		
+		response.WriteString(fmt.Sprintf("**%d. %s**\n", i+1, group.GroupName))
+		response.WriteString(fmt.Sprintf("🆔 JID: `%s`\n", group.GroupJID))
+		response.WriteString(fmt.Sprintf("📊 Status: %s\n", status))
+		response.WriteString(fmt.Sprintf("👤 Ditambah: %s\n\n", group.CreatedBy))
 	}
+	
+	response.WriteString(fmt.Sprintf("📊 **Total:** %d grup | **Aktif:** %d grup", len(groups), activeCount))
+	
+	h.sendAdminMessage(evt.Info.Chat, response.String())
+}
 
-	response += `
+// handleStatsCommand menangani command statistik
+func (h *LearningMessageHandler) handleStatsCommand(evt *events.Message, userJID string) {
+	statsText := `📊 **STATISTIK BOT PEMBELAJARAN** 📊
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Total: ` + fmt.Sprintf("%d grup", len(groups))
+🎯 **XRay Converter:**
+Gunakan dashboard untuk stats lengkap
+🌐 http://localhost:1462
 
-	h.sendTextToChat(evt.Info.Chat, response)
-}
+📚 **Learning Commands:**
+Lihat usage stats di dashboard
 
-// handleGetGroups menangani command .getgroups (sama seperti .listgroups)
-func (h *LearningMessageHandler) handleGetGroups(evt *events.Message) {
-	h.handleListGroups(evt) // Redirect ke handleListGroups
-}
-
-// handleGetAllGroups menampilkan semua grup yang diikuti WhatsApp bot (langsung dari WhatsApp)
-func (h *LearningMessageHandler) handleGetAllGroups(evt *events.Message) {
-	// Hanya admin yang bisa
-	if !h.isAdmin(evt.Info.Sender.User) {
-		h.sendTextToChat(evt.Info.Chat, "❌ Akses ditolak: hanya admin")
-		return
-	}
-
-	text, err := h.learningService.ListJoinedGroups()
-	if err != nil {
-		h.sendTextToChat(evt.Info.Chat, "❌ Gagal mengambil daftar grup: "+err.Error())
-		return
-	}
-
-	h.sendTextToChat(evt.Info.Chat, text)
-}
-
-// handleStats menangani command .stats
-func (h *LearningMessageHandler) handleStats(evt *events.Message, command string) {
-	// Format: .stats [days] (default 7 hari)
-	days := 7
-	parts := strings.Fields(command)
-	if len(parts) > 1 {
-		if d, err := fmt.Sscanf(parts[1], "%d", &days); err != nil || d != 1 {
-			days = 7
-		}
-	}
-
-	stats, err := h.learningService.GetUsageStats(days)
-	if err != nil {
-		h.sendTextToChat(evt.Info.Chat, fmt.Sprintf("❌ *GAGAL*\n\nError: %v", err))
-		return
-	}
-
-	if len(stats) == 0 {
-		h.sendTextToChat(evt.Info.Chat, fmt.Sprintf(`ℹ️ *TIDAK ADA DATA*
-
-Belum ada aktivitas command dalam %d hari terakhir.`, days))
-		return
-	}
-
-	response := fmt.Sprintf(`📊 *STATISTIK PENGGUNAAN* (%d hari)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-`, days)
-
-	i := 1
-	for command, count := range stats {
-		response += fmt.Sprintf("%d. %s: *%d kali*\n", i, command, count)
-		i++
-		if i > 10 { // Batasi 10 teratas
-			break
-		}
-	}
-
-	response += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
-
-	h.sendTextToChat(evt.Info.Chat, response)
-}
-
-// handleLogs menangani command .logs
-func (h *LearningMessageHandler) handleLogs(evt *events.Message, command string) {
-	// Format: .logs [limit] (default 10)
-	limit := 10
-	parts := strings.Fields(command)
-	if len(parts) > 1 {
-		if l, err := fmt.Sscanf(parts[1], "%d", &limit); err != nil || l != 1 {
-			limit = 10
-		}
-	}
-
-	logs, err := h.learningService.GetUsageLogs(limit)
-	if err != nil {
-		h.sendTextToChat(evt.Info.Chat, fmt.Sprintf("❌ *GAGAL*\n\nError: %v", err))
-		return
-	}
-
-	if len(logs) == 0 {
-		h.sendTextToChat(evt.Info.Chat, `ℹ️ *TIDAK ADA LOG*
-
-Belum ada aktivitas yang tercatat.`)
-		return
-	}
-
-	response := fmt.Sprintf(`📋 *LOG AKTIVITAS* (%d terakhir)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-`, limit)
-
-	for i, log := range logs {
-		status := "✅"
-		if !log.Success {
-			status = "❌"
-		}
-
-		response += fmt.Sprintf(`
-%d. %s %s (%s)
-   ⏰ %s`,
-			i+1, status, log.CommandValue, log.ResponseType,
-			log.UsedAt.Format("02/01 15:04"))
-	}
-
-	response += `
+🔧 **System Status:**
+✅ Learning System: Running
+✅ XRay Converter: Running  
+✅ Web Dashboard: Running
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
 
-	h.sendTextToChat(evt.Info.Chat, response)
+	h.sendAdminMessage(evt.Info.Chat, statsText)
 }
 
-// === HELPER FUNCTIONS ===
-
-// sendAdminHelp mengirim bantuan untuk admin
-func (h *LearningMessageHandler) sendAdminHelp(chatJID types.JID) {
-	help := `👑 *BANTUAN ADMIN BOT PEMBELAJARAN*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            *COMMAND ADMIN*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🔧 *KELOLA GRUP:*
-• .groups/.allgroups - Lihat semua grup yang diikuti bot
-• .addgroup <jid> <nama> - Aktifkan grup untuk learning
-• .removegroup <jid> - Nonaktifkan grup
-• .listgroups/.getgroups - Daftar grup learning yang aktif
-
-📊 *MONITORING:*
-• .stats [days] - Statistik penggunaan
-• .logs [limit] - Log aktivitas terbaru
-
-ℹ️ *INFORMASI:*
-• .help / .adminhelp - Bantuan ini
+// handleLogsCommand menangani command logs
+func (h *LearningMessageHandler) handleLogsCommand(evt *events.Message, userJID string) {
+	logsText := `📋 **BOT LOGS** 📋
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🎯 *CARA KERJA BOT:*
-1. Admin aktifkan grup dengan .addgroup
-2. Bot hanya merespon di grup yang diaktifkan
-3. User di grup bisa pakai command pembelajaran
-4. Bot diam total di grup yang tidak diaktifkan
+📝 **Recent Activity:**
+Lihat logs real-time di console
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-`
+🌐 **Detailed Logs:**
+Dashboard: http://localhost:1462
 
-	h.sendTextToChat(chatJID, help)
+💡 **Tips:**
+- Monitor console untuk real-time logs
+- Dashboard menyediakan logs terstruktur
+- XRay conversion logs tersimpan otomatis
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
+
+	h.sendAdminMessage(evt.Info.Chat, logsText)
 }
 
-// sendUnknownCommand mengirim pesan command tidak dikenal
-func (h *LearningMessageHandler) sendUnknownCommand(chatJID types.JID) {
-	response := `❓ *COMMAND TIDAK DIKENAL*
+// === UTILITY FUNCTIONS ===
 
-Ketik .help untuk melihat daftar command yang tersedia.`
-
-	h.sendTextToChat(chatJID, response)
-}
-
-// sendTextToChat mengirim pesan teks ke chat
-func (h *LearningMessageHandler) sendTextToChat(chatJID types.JID, text string) {
-	msg := &waProto.Message{
-		Conversation: &text,
+// getMessageText mengekstrak teks dari pesan WhatsApp
+func (h *LearningMessageHandler) getMessageText(message *waProto.Message) string {
+	if message.Conversation != nil {
+		return *message.Conversation
 	}
-
-	_, err := h.client.SendMessage(context.Background(), chatJID, msg)
-	if err != nil {
-		h.logger.Errorf("Failed to send text message: %v", err)
+	
+	if message.ExtendedTextMessage != nil && message.ExtendedTextMessage.Text != nil {
+		return *message.ExtendedTextMessage.Text
 	}
-}
-
-// getMessageText mengekstrak teks dari berbagai tipe pesan WhatsApp
-func (h *LearningMessageHandler) getMessageText(msg *waProto.Message) string {
-	// Pesan teks biasa
-	if msg.GetConversation() != "" {
-		return msg.GetConversation()
-	}
-
-	// Pesan teks dengan format (bold, italic, dll) atau reply
-	if msg.GetExtendedTextMessage() != nil {
-		return msg.GetExtendedTextMessage().GetText()
-	}
-
-	// Jika bukan teks, return empty string
+	
 	return ""
 }
 

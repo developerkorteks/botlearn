@@ -67,6 +67,20 @@ type Repository interface {
 	CreateForbiddenWord(word *ForbiddenWord) error
 	GetForbiddenWordsByGroup(groupJID string) ([]ForbiddenWord, error)
 	DeleteForbiddenWord(id int) error
+	
+	// XRay Converters
+	CreateXRayConverter(converter *XRayConverter) error
+	GetXRayConverter(commandName string) (*XRayConverter, error)
+	GetAllXRayConverters() ([]XRayConverter, error)
+	GetActiveXRayConverters() ([]XRayConverter, error)
+	UpdateXRayConverter(converter *XRayConverter) error
+	DeleteXRayConverter(commandName string) error
+	IncrementConverterUsage(commandName string) error
+	
+	// XRay Conversion Logs
+	LogXRayConversion(log *XRayConversionLog) error
+	GetXRayConversionLogs(limit int) ([]XRayConversionLog, error)
+	GetXRayConversionStats(days int) (map[string]int, error)
 }
 
 // SQLiteRepository implementasi repository untuk SQLite
@@ -804,4 +818,234 @@ func InitializeDatabase(dbPath string) (*sql.DB, Repository, error) {
 	repo := NewSQLiteRepository(db)
 	
 	return db, repo, nil
+}
+
+// === XRAY CONVERTERS ===
+
+func (r *SQLiteRepository) CreateXRayConverter(converter *XRayConverter) error {
+	query := `INSERT INTO xray_converters (command_name, display_name, bug_host, modify_type, 
+			  server_template, host_template, sni_template, path_template, grpc_service_name, 
+			  port_override, is_active, usage_count, created_by, created_at, updated_at)
+			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now'), datetime('now'))`
+	
+	_, err := r.db.Exec(query, converter.CommandName, converter.DisplayName, converter.BugHost,
+		converter.ModifyType, converter.ServerTemplate, converter.HostTemplate, converter.SNITemplate,
+		converter.PathTemplate, converter.GrpcServiceName, converter.PortOverride, converter.IsActive, converter.CreatedBy)
+	
+	return err
+}
+
+func (r *SQLiteRepository) GetXRayConverter(commandName string) (*XRayConverter, error) {
+	query := `SELECT id, command_name, display_name, bug_host, modify_type, server_template,
+			  host_template, sni_template, path_template, grpc_service_name, port_override, 
+			  is_active, usage_count, created_by, created_at, updated_at
+			  FROM xray_converters WHERE command_name = ?`
+	
+	row := r.db.QueryRow(query, commandName)
+	
+	var converter XRayConverter
+	var portOverride sql.NullInt64
+	
+	err := row.Scan(&converter.ID, &converter.CommandName, &converter.DisplayName,
+		&converter.BugHost, &converter.ModifyType, &converter.ServerTemplate,
+		&converter.HostTemplate, &converter.SNITemplate, &converter.PathTemplate,
+		&converter.GrpcServiceName, &portOverride, &converter.IsActive,
+		&converter.UsageCount, &converter.CreatedBy, &converter.CreatedAt, &converter.UpdatedAt)
+	
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	
+	if portOverride.Valid {
+		port := int(portOverride.Int64)
+		converter.PortOverride = &port
+	}
+	
+	return &converter, nil
+}
+
+func (r *SQLiteRepository) GetAllXRayConverters() ([]XRayConverter, error) {
+	query := `SELECT id, command_name, display_name, bug_host, modify_type, server_template,
+			  host_template, sni_template, path_template, grpc_service_name, port_override, 
+			  is_active, usage_count, created_by, created_at, updated_at
+			  FROM xray_converters ORDER BY created_at DESC`
+	
+	rows, err := r.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var converters []XRayConverter
+	
+	for rows.Next() {
+		var converter XRayConverter
+		var portOverride sql.NullInt64
+		
+		err := rows.Scan(&converter.ID, &converter.CommandName, &converter.DisplayName,
+			&converter.BugHost, &converter.ModifyType, &converter.ServerTemplate,
+			&converter.HostTemplate, &converter.SNITemplate, &converter.PathTemplate,
+			&converter.GrpcServiceName, &portOverride, &converter.IsActive,
+			&converter.UsageCount, &converter.CreatedBy, &converter.CreatedAt, &converter.UpdatedAt)
+		
+		if err != nil {
+			return nil, err
+		}
+		
+		if portOverride.Valid {
+			port := int(portOverride.Int64)
+			converter.PortOverride = &port
+		}
+		
+		converters = append(converters, converter)
+	}
+	
+	return converters, nil
+}
+
+func (r *SQLiteRepository) GetActiveXRayConverters() ([]XRayConverter, error) {
+	query := `SELECT id, command_name, display_name, bug_host, modify_type, server_template,
+			  host_template, sni_template, path_template, grpc_service_name, port_override, 
+			  is_active, usage_count, created_by, created_at, updated_at
+			  FROM xray_converters WHERE is_active = 1 ORDER BY command_name ASC`
+	
+	rows, err := r.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var converters []XRayConverter
+	
+	for rows.Next() {
+		var converter XRayConverter
+		var portOverride sql.NullInt64
+		
+		err := rows.Scan(&converter.ID, &converter.CommandName, &converter.DisplayName,
+			&converter.BugHost, &converter.ModifyType, &converter.ServerTemplate,
+			&converter.HostTemplate, &converter.SNITemplate, &converter.PathTemplate,
+			&converter.GrpcServiceName, &portOverride, &converter.IsActive,
+			&converter.UsageCount, &converter.CreatedBy, &converter.CreatedAt, &converter.UpdatedAt)
+		
+		if err != nil {
+			return nil, err
+		}
+		
+		if portOverride.Valid {
+			port := int(portOverride.Int64)
+			converter.PortOverride = &port
+		}
+		
+		converters = append(converters, converter)
+	}
+	
+	return converters, nil
+}
+
+func (r *SQLiteRepository) UpdateXRayConverter(converter *XRayConverter) error {
+	query := `UPDATE xray_converters SET display_name = ?, bug_host = ?, modify_type = ?,
+			  server_template = ?, host_template = ?, sni_template = ?, path_template = ?, 
+			  grpc_service_name = ?, port_override = ?, is_active = ?, updated_at = datetime('now') 
+			  WHERE command_name = ?`
+	
+	_, err := r.db.Exec(query, converter.DisplayName, converter.BugHost, converter.ModifyType,
+		converter.ServerTemplate, converter.HostTemplate, converter.SNITemplate,
+		converter.PathTemplate, converter.GrpcServiceName, converter.PortOverride,
+		converter.IsActive, converter.CommandName)
+	
+	return err
+}
+
+func (r *SQLiteRepository) DeleteXRayConverter(commandName string) error {
+	query := `DELETE FROM xray_converters WHERE command_name = ?`
+	_, err := r.db.Exec(query, commandName)
+	return err
+}
+
+func (r *SQLiteRepository) IncrementConverterUsage(commandName string) error {
+	query := `UPDATE xray_converters SET usage_count = usage_count + 1 WHERE command_name = ?`
+	_, err := r.db.Exec(query, commandName)
+	return err
+}
+
+// === XRAY CONVERSION LOGS ===
+
+func (r *SQLiteRepository) LogXRayConversion(log *XRayConversionLog) error {
+	query := `INSERT INTO xray_conversion_logs (converter_name, user_jid, group_jid, original_protocol,
+			  original_network, original_server, modified_server, success, error_message, used_at)
+			  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+	
+	_, err := r.db.Exec(query, log.ConverterName, log.UserJID, log.GroupJID,
+		log.OriginalProtocol, log.OriginalNetwork, log.OriginalServer,
+		log.ModifiedServer, log.Success, log.ErrorMessage)
+	
+	return err
+}
+
+func (r *SQLiteRepository) GetXRayConversionLogs(limit int) ([]XRayConversionLog, error) {
+	query := `SELECT id, converter_name, user_jid, group_jid, original_protocol, original_network,
+			  original_server, modified_server, success, error_message, used_at
+			  FROM xray_conversion_logs ORDER BY used_at DESC LIMIT ?`
+	
+	rows, err := r.db.Query(query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var logs []XRayConversionLog
+	
+	for rows.Next() {
+		var log XRayConversionLog
+		var errorMessage sql.NullString
+		
+		err := rows.Scan(&log.ID, &log.ConverterName, &log.UserJID, &log.GroupJID,
+			&log.OriginalProtocol, &log.OriginalNetwork, &log.OriginalServer,
+			&log.ModifiedServer, &log.Success, &errorMessage, &log.UsedAt)
+		
+		if err != nil {
+			return nil, err
+		}
+		
+		if errorMessage.Valid {
+			log.ErrorMessage = &errorMessage.String
+		}
+		
+		logs = append(logs, log)
+	}
+	
+	return logs, nil
+}
+
+func (r *SQLiteRepository) GetXRayConversionStats(days int) (map[string]int, error) {
+	query := `SELECT converter_name, COUNT(*) as count
+			  FROM xray_conversion_logs 
+			  WHERE used_at >= datetime('now', '-' || ? || ' days')
+			  GROUP BY converter_name
+			  ORDER BY count DESC`
+	
+	rows, err := r.db.Query(query, days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	stats := make(map[string]int)
+	
+	for rows.Next() {
+		var converterName string
+		var count int
+		
+		err := rows.Scan(&converterName, &count)
+		if err != nil {
+			return nil, err
+		}
+		
+		stats[converterName] = count
+	}
+	
+	return stats, nil
 }

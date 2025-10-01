@@ -46,6 +46,8 @@ func (s *DashboardServer) StartServer(port int) error {
 	http.HandleFunc("/api/forbidden_words", s.handleForbiddenWords)
 	http.HandleFunc("/api/upload", s.handleUpload)
 	http.HandleFunc("/api/stats", s.handleStats)
+	http.HandleFunc("/api/xray_converters", s.handleXRayConverters)
+	http.HandleFunc("/api/xray_converters/test", s.handleXRayConverterTest)
 	
 	// Static files
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static/"))))
@@ -123,6 +125,9 @@ func (s *DashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request
                     <a class="nav-link" href="#" onclick="showTab('stats')">
                         <i class="fas fa-chart-bar"></i> Statistik
                     </a>
+                    <a class="nav-link" href="#" onclick="showTab('xray')">
+                        <i class="fas fa-exchange-alt"></i> XRay Converter
+                    </a>
                 </nav>
             </div>
             
@@ -182,6 +187,24 @@ func (s *DashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request
                     <div id="autoremove-group-list"></div>
                 </div>
                 
+                <!-- XRay Converter Tab -->
+                <div id="xray-tab" class="tab-content" style="display:none;">
+                    <h2><i class="fas fa-exchange-alt"></i> Kelola XRay Converter</h2>
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div>
+                            <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#addXRayConverterModal">
+                                <i class="fas fa-plus"></i> Tambah Converter
+                            </button>
+                            <button class="btn btn-primary" onclick="refreshXRayConverters()">
+                                <i class="fas fa-sync"></i> Refresh
+                            </button>
+                        </div>
+                    </div>
+                    <div id="xray-converters-list" class="row">
+                        <!-- XRay converters will be loaded here -->
+                    </div>
+                </div>
+
                 <!-- Stats Tab -->
                 <div id="stats-tab" class="tab-content" style="display:none;">
                     <h2><i class="fas fa-chart-bar"></i> Statistik Penggunaan</h2>
@@ -484,12 +507,252 @@ func (s *DashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request
             </div>
         </div>
     </div>
+
+    <!-- Edit XRay Converter Modal -->
+    <div class="modal fade" id="editXRayConverterModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Edit XRay Converter</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="editXRayConverterForm">
+                        <input type="hidden" id="editConverterOriginalCommand">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Command Name *</label>
+                                    <input type="text" class="form-control" id="editConverterCommand" readonly>
+                                    <small class="text-muted">Command name tidak bisa diubah</small>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Display Name *</label>
+                                    <input type="text" class="form-control" id="editConverterDisplayName" required>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Bug Host *</label>
+                                    <input type="text" class="form-control" id="editConverterBugHost" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Modify Type *</label>
+                                    <select class="form-control" id="editConverterModifyType" onchange="toggleEditAdvancedSettings()" required>
+                                        <option value="wildcard">🌐 Wildcard</option>
+                                        <option value="sni">🔐 SNI Only</option>
+                                        <option value="ws">📡 WebSocket</option>
+                                        <option value="grpc">⚡ gRPC</option>
+                                        <option value="custom">🎛️ Custom (Advanced)</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Advanced Template Settings -->
+                        <div id="editAdvancedSettings" style="display:none;">
+                            <h6 class="text-primary mb-3">🎛️ Advanced Template Settings</h6>
+                            <div class="alert alert-info">
+                                <strong>Available Placeholders:</strong><br>
+                                <code>{bug_host}</code> - Bug host domain<br>
+                                <code>{bug_ip}</code> - Bug host IP<br>
+                                <code>{original_server}</code> - Original server<br>
+                                <code>{original_host}</code> - Original host<br>
+                                <code>{original_sni}</code> - Original SNI<br>
+                                <small class="text-muted">Leave empty to use original value</small>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-4">
+                                    <div class="mb-3">
+                                        <label class="form-label">Server Template</label>
+                                        <input type="text" class="form-control" id="editConverterServerTemplate">
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="mb-3">
+                                        <label class="form-label">Host Template</label>
+                                        <input type="text" class="form-control" id="editConverterHostTemplate">
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="mb-3">
+                                        <label class="form-label">SNI Template</label>
+                                        <input type="text" class="form-control" id="editConverterSNITemplate">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Path Template</label>
+                                    <input type="text" class="form-control" id="editConverterPathTemplate">
+                                    <small class="text-muted">Untuk WS/HTTPUpgrade, kosongkan untuk keep original</small>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">gRPC Service Name</label>
+                                    <input type="text" class="form-control" id="editConverterGrpcService">
+                                    <small class="text-muted">Hanya untuk gRPC modify type</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Port Override</label>
+                                    <input type="number" class="form-control" id="editConverterPortOverride">
+                                    <small class="text-muted">Kosongkan untuk gunakan port original</small>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Status</label>
+                                    <select class="form-control" id="editConverterIsActive">
+                                        <option value="true">✅ Aktif</option>
+                                        <option value="false">❌ Nonaktif</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
+                    <button type="button" class="btn btn-primary" onclick="saveEditXRayConverter()">Update</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add XRay Converter Modal -->
+    <div class="modal fade" id="addXRayConverterModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Tambah XRay Converter</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="addXRayConverterForm">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Command Name *</label>
+                                    <input type="text" class="form-control" id="newConverterCommand" placeholder="convertbizz" required>
+                                    <small class="text-muted">Tanpa titik, contoh: convertbizz</small>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Display Name *</label>
+                                    <input type="text" class="form-control" id="newConverterDisplayName" placeholder="XL-Line-WC" required>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Bug Host *</label>
+                                    <input type="text" class="form-control" id="newConverterBugHost" placeholder="ava.game.naver.com" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Modify Type *</label>
+                                    <select class="form-control" id="newConverterModifyType" onchange="toggleAdvancedSettings()" required>
+                                        <option value="wildcard">🌐 Wildcard</option>
+                                        <option value="sni">🔐 SNI Only</option>
+                                        <option value="ws">📡 WebSocket</option>
+                                        <option value="grpc">⚡ gRPC</option>
+                                        <option value="custom">🎛️ Custom (Advanced)</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Advanced Template Settings -->
+                        <div id="advancedSettings" style="display:none;">
+                            <h6 class="text-primary mb-3">🎛️ Advanced Template Settings</h6>
+                            <div class="alert alert-info">
+                                <strong>Available Placeholders:</strong><br>
+                                <code>{bug_host}</code> - Bug host domain<br>
+                                <code>{bug_ip}</code> - Bug host IP<br>
+                                <code>{original_server}</code> - Original server<br>
+                                <code>{original_host}</code> - Original host<br>
+                                <code>{original_sni}</code> - Original SNI<br>
+                                <small class="text-muted">Leave empty to use original value</small>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-4">
+                                    <div class="mb-3">
+                                        <label class="form-label">Server Template</label>
+                                        <input type="text" class="form-control" id="newConverterServerTemplate" placeholder="{bug_host}">
+                                        <small class="text-muted">e.g., {bug_host} or {bug_ip}</small>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="mb-3">
+                                        <label class="form-label">Host Template</label>
+                                        <input type="text" class="form-control" id="newConverterHostTemplate" placeholder="{bug_host}.{original_server}">
+                                        <small class="text-muted">e.g., {bug_host}.{original_server}</small>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="mb-3">
+                                        <label class="form-label">SNI Template</label>
+                                        <input type="text" class="form-control" id="newConverterSNITemplate" placeholder="{bug_host}.{original_server}">
+                                        <small class="text-muted">e.g., {bug_host}.{original_server}</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Path Template</label>
+                                    <input type="text" class="form-control" id="newConverterPathTemplate" placeholder="/rsv">
+                                    <small class="text-muted">Untuk WS/HTTPUpgrade, kosongkan untuk keep original</small>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">gRPC Service Name</label>
+                                    <input type="text" class="form-control" id="newConverterGrpcService" placeholder="vmess-grpc">
+                                    <small class="text-muted">Hanya untuk gRPC modify type</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Port Override</label>
+                            <input type="number" class="form-control" id="newConverterPortOverride" placeholder="443">
+                            <small class="text-muted">Kosongkan untuk gunakan port original</small>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Batal</button>
+                    <button type="button" class="btn btn-primary" onclick="saveNewXRayConverter()">Simpan</button>
+                </div>
+            </div>
+        </div>
+    </div>
     
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         let currentGroups = [];
         let currentCommands = [];
         let currentAutoResponses = [];
+        let currentXRayConverters = [];
 
         document.addEventListener('DOMContentLoaded', function() {
             showTab('groups');
@@ -513,6 +776,7 @@ func (s *DashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request
                 case 'groups': refreshGroups(); break;
                 case 'commands': refreshCommands(); break;
                 case 'autoresponses': refreshAutoResponses(); break;
+                case 'xray': refreshXRayConverters(); break;
                 case 'autoremove': refreshAutoRemoveTab(); break;
                 case 'stats': refreshStats(); break;
             }
@@ -1402,6 +1666,240 @@ func (s *DashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request
             });
         }
 
+        // === XRAY CONVERTER FUNCTIONS ===
+
+        function refreshXRayConverters() {
+            fetch('/api/xray_converters')
+                .then(response => response.json())
+                .then(data => {
+                    currentXRayConverters = data.converters || [];
+                    displayXRayConverters();
+                })
+                .catch(error => console.error('Error:', error));
+        }
+
+        function displayXRayConverters() {
+            const container = document.getElementById('xray-converters-list');
+            if (currentXRayConverters.length === 0) {
+                container.innerHTML = '<div class="col-12"><div class="alert alert-info"><i class="fas fa-info-circle"></i> Belum ada XRay converter. Klik "Tambah Converter" untuk membuat yang pertama.</div></div>';
+                return;
+            }
+
+            let html = '';
+            currentXRayConverters.forEach(converter => {
+                const statusBadge = converter.is_active ? 
+                    '<span class="badge bg-success">Aktif</span>' : 
+                    '<span class="badge bg-secondary">Nonaktif</span>';
+                
+                const typeIcon = {
+                    'wildcard': '🌐',
+                    'sni': '🔐',
+                    'ws': '📡',
+                    'grpc': '⚡'
+                }[converter.modify_type] || '🔧';
+
+                html += ` + "`" + `
+                    <div class="col-md-6 col-lg-4 mb-3">
+                        <div class="card h-100">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between align-items-start mb-2">
+                                    <h6 class="card-title mb-0">${converter.display_name}</h6>
+                                    ${statusBadge}
+                                </div>
+                                <p class="card-text mb-1">
+                                    <strong>Command:</strong> .${converter.command_name}<br>
+                                    <strong>Type:</strong> ${typeIcon} ${converter.modify_type}<br>
+                                    <strong>Bug Host:</strong> ${converter.bug_host}<br>
+                                    <strong>Usage:</strong> ${converter.usage_count || 0}x
+                                </p>
+                                ${converter.path_template ? ` + "`" + `<small class="text-muted">Path: ${converter.path_template}</small><br>` + "`" + ` : ''}
+                                ${converter.grpc_service_name ? ` + "`" + `<small class="text-muted">gRPC: ${converter.grpc_service_name}</small><br>` + "`" + ` : ''}
+                                <small class="text-muted">Created by: ${converter.created_by}</small>
+                            </div>
+                            <div class="card-footer">
+                                <div class="btn-group w-100" role="group">
+                                    <button class="btn btn-outline-primary btn-sm" onclick="editXRayConverter('${converter.command_name}')">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                    <button class="btn btn-outline-danger btn-sm" onclick="deleteXRayConverter('${converter.command_name}')">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                ` + "`" + `;
+            });
+
+            container.innerHTML = html;
+        }
+
+        function toggleAdvancedSettings() {
+            const modifyType = document.getElementById('newConverterModifyType').value;
+            const advancedSettings = document.getElementById('advancedSettings');
+            
+            if (modifyType === 'custom') {
+                advancedSettings.style.display = 'block';
+            } else {
+                advancedSettings.style.display = 'none';
+                // Clear template fields when not using custom
+                document.getElementById('newConverterServerTemplate').value = '';
+                document.getElementById('newConverterHostTemplate').value = '';
+                document.getElementById('newConverterSNITemplate').value = '';
+            }
+        }
+
+        function saveNewXRayConverter() {
+            const converterData = {
+                command_name: document.getElementById('newConverterCommand').value,
+                display_name: document.getElementById('newConverterDisplayName').value,
+                bug_host: document.getElementById('newConverterBugHost').value,
+                modify_type: document.getElementById('newConverterModifyType').value,
+                server_template: document.getElementById('newConverterServerTemplate').value,
+                host_template: document.getElementById('newConverterHostTemplate').value,
+                sni_template: document.getElementById('newConverterSNITemplate').value,
+                path_template: document.getElementById('newConverterPathTemplate').value,
+                grpc_service_name: document.getElementById('newConverterGrpcService').value,
+                port_override: document.getElementById('newConverterPortOverride').value ? 
+                    parseInt(document.getElementById('newConverterPortOverride').value) : null
+            };
+
+            // Validation
+            if (!converterData.command_name || !converterData.display_name || !converterData.bug_host || !converterData.modify_type) {
+                alert('Mohon isi semua field yang required (*)');
+                return;
+            }
+
+            fetch('/api/xray_converters', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(converterData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('✅ XRay Converter berhasil ditambahkan!');
+                    document.getElementById('addXRayConverterForm').reset();
+                    bootstrap.Modal.getInstance(document.getElementById('addXRayConverterModal')).hide();
+                    refreshXRayConverters();
+                } else {
+                    alert('❌ Gagal menambahkan converter: ' + (data.message || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('❌ Error: ' + error.message);
+            });
+        }
+
+        function deleteXRayConverter(commandName) {
+            if (!confirm(` + "`" + `Yakin ingin menghapus converter "${commandName}"?` + "`" + `)) return;
+
+            fetch(` + "`" + `/api/xray_converters?command=${commandName}` + "`" + `, {
+                method: 'DELETE'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('✅ Converter berhasil dihapus!');
+                    refreshXRayConverters();
+                } else {
+                    alert('❌ Gagal menghapus converter: ' + (data.message || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('❌ Error: ' + error.message);
+            });
+        }
+
+        function toggleEditAdvancedSettings() {
+            const modifyType = document.getElementById('editConverterModifyType').value;
+            const advancedSettings = document.getElementById('editAdvancedSettings');
+            
+            if (modifyType === 'custom') {
+                advancedSettings.style.display = 'block';
+            } else {
+                advancedSettings.style.display = 'none';
+            }
+        }
+
+        function editXRayConverter(commandName) {
+            // Debug: Log available converters
+            console.log('Looking for converter:', commandName);
+            console.log('Available converters:', currentXRayConverters);
+            
+            // Find converter data
+            const converter = currentXRayConverters.find(c => c.command_name === commandName);
+            if (!converter) {
+                alert('❌ Converter tidak ditemukan! Command: ' + commandName + '\nAvailable: ' + currentXRayConverters.map(c => c.command_name).join(', '));
+                return;
+            }
+
+            // Populate form
+            document.getElementById('editConverterOriginalCommand').value = converter.command_name;
+            document.getElementById('editConverterCommand').value = converter.command_name;
+            document.getElementById('editConverterDisplayName').value = converter.display_name;
+            document.getElementById('editConverterBugHost').value = converter.bug_host;
+            document.getElementById('editConverterModifyType').value = converter.modify_type;
+            document.getElementById('editConverterServerTemplate').value = converter.server_template || '';
+            document.getElementById('editConverterHostTemplate').value = converter.host_template || '';
+            document.getElementById('editConverterSNITemplate').value = converter.sni_template || '';
+            document.getElementById('editConverterPathTemplate').value = converter.path_template || '';
+            document.getElementById('editConverterGrpcService').value = converter.grpc_service_name || '';
+            document.getElementById('editConverterPortOverride').value = converter.port_override || '';
+            document.getElementById('editConverterIsActive').value = converter.is_active ? 'true' : 'false';
+
+            // Toggle advanced settings if needed
+            toggleEditAdvancedSettings();
+
+            // Show modal
+            new bootstrap.Modal(document.getElementById('editXRayConverterModal')).show();
+        }
+
+        function saveEditXRayConverter() {
+            const converterData = {
+                command_name: document.getElementById('editConverterOriginalCommand').value,
+                display_name: document.getElementById('editConverterDisplayName').value,
+                bug_host: document.getElementById('editConverterBugHost').value,
+                modify_type: document.getElementById('editConverterModifyType').value,
+                server_template: document.getElementById('editConverterServerTemplate').value,
+                host_template: document.getElementById('editConverterHostTemplate').value,
+                sni_template: document.getElementById('editConverterSNITemplate').value,
+                path_template: document.getElementById('editConverterPathTemplate').value,
+                grpc_service_name: document.getElementById('editConverterGrpcService').value,
+                port_override: document.getElementById('editConverterPortOverride').value ? 
+                    parseInt(document.getElementById('editConverterPortOverride').value) : null,
+                is_active: document.getElementById('editConverterIsActive').value === 'true'
+            };
+
+            // Validation
+            if (!converterData.display_name || !converterData.bug_host || !converterData.modify_type) {
+                alert('Mohon isi semua field yang required (*)');
+                return;
+            }
+
+            fetch('/api/xray_converters', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(converterData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('✅ XRay Converter berhasil diupdate!');
+                    bootstrap.Modal.getInstance(document.getElementById('editXRayConverterModal')).hide();
+                    refreshXRayConverters();
+                } else {
+                    alert('❌ Gagal mengupdate converter: ' + (data.message || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('❌ Error: ' + error.message);
+            });
+        }
+
     </script>
 </body>
 </html>`
@@ -1711,4 +2209,168 @@ func (s *DashboardServer) deleteForbiddenWord(w http.ResponseWriter, r *http.Req
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+}
+
+// === XRAY CONVERTER HANDLERS ===
+
+// handleXRayConverters handles CRUD operations for XRay converters
+func (s *DashboardServer) handleXRayConverters(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == "OPTIONS" {
+		return
+	}
+
+	switch r.Method {
+	case "GET":
+		s.handleGetXRayConverters(w, r)
+	case "POST":
+		s.handleCreateXRayConverter(w, r)
+	case "PUT":
+		s.handleUpdateXRayConverter(w, r)
+	case "DELETE":
+		s.handleDeleteXRayConverter(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleGetXRayConverters returns all XRay converters
+func (s *DashboardServer) handleGetXRayConverters(w http.ResponseWriter, r *http.Request) {
+	converters, err := s.repository.GetAllXRayConverters()
+	if err != nil {
+		s.logger.Errorf("Failed to get XRay converters: %v", err)
+		http.Error(w, "Failed to get converters", http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"success":    true,
+		"converters": converters,
+		"count":      len(converters),
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleCreateXRayConverter creates a new XRay converter
+func (s *DashboardServer) handleCreateXRayConverter(w http.ResponseWriter, r *http.Request) {
+	var converter database.XRayConverter
+	if err := json.NewDecoder(r.Body).Decode(&converter); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Validate required fields
+	if converter.CommandName == "" || converter.DisplayName == "" || converter.BugHost == "" || converter.ModifyType == "" {
+		http.Error(w, "Missing required fields", http.StatusBadRequest)
+		return
+	}
+
+	// Set default values
+	converter.IsActive = true
+	converter.CreatedBy = "admin" // TODO: Get from session/auth
+
+	// Create converter
+	err := s.repository.CreateXRayConverter(&converter)
+	if err != nil {
+		s.logger.Errorf("Failed to create XRay converter: %v", err)
+		http.Error(w, "Failed to create converter", http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"success": true,
+		"message": "Converter created successfully",
+		"converter": converter,
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleUpdateXRayConverter updates an existing XRay converter
+func (s *DashboardServer) handleUpdateXRayConverter(w http.ResponseWriter, r *http.Request) {
+	var converter database.XRayConverter
+	if err := json.NewDecoder(r.Body).Decode(&converter); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Validate required fields
+	if converter.CommandName == "" {
+		http.Error(w, "Command name is required", http.StatusBadRequest)
+		return
+	}
+
+	err := s.repository.UpdateXRayConverter(&converter)
+	if err != nil {
+		s.logger.Errorf("Failed to update XRay converter: %v", err)
+		http.Error(w, "Failed to update converter", http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"success": true,
+		"message": "Converter updated successfully",
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleDeleteXRayConverter deletes an XRay converter
+func (s *DashboardServer) handleDeleteXRayConverter(w http.ResponseWriter, r *http.Request) {
+	commandName := r.URL.Query().Get("command")
+	if commandName == "" {
+		http.Error(w, "Command name is required", http.StatusBadRequest)
+		return
+	}
+
+	err := s.repository.DeleteXRayConverter(commandName)
+	if err != nil {
+		s.logger.Errorf("Failed to delete XRay converter: %v", err)
+		http.Error(w, "Failed to delete converter", http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"success": true,
+		"message": "Converter deleted successfully",
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleXRayConverterTest tests an XRay converter with sample input
+func (s *DashboardServer) handleXRayConverterTest(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var testRequest struct {
+		ConverterName string `json:"converter_name"`
+		XRayLink      string `json:"xray_link"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&testRequest); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// TODO: Implement XRay converter test logic
+	// This would use the XRayConverterService to test conversion
+	
+	response := map[string]interface{}{
+		"success": true,
+		"message": "Test functionality will be implemented with XRayConverterService integration",
+		"input": testRequest,
+	}
+
+	json.NewEncoder(w).Encode(response)
 }
