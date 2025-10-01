@@ -25,6 +25,7 @@ func RunLearningMigrations(db *sql.DB) error {
 		createLearningGroupsTable,
 		createLearningCommandsTable,
 		createAutoResponsesTable,
+		deleteDuplicateAutoResponses, // Hapus duplikat
 		createCommandUsageLogsTable,
 		createForbiddenWordsTable, // Tambahkan ini
 		insertDefaultLearningCommands,
@@ -325,7 +326,7 @@ CREATE INDEX IF NOT EXISTS idx_learning_commands_type ON learning_commands(respo
 const createAutoResponsesTable = `
 CREATE TABLE IF NOT EXISTS auto_responses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    keyword TEXT NOT NULL,
+    keyword TEXT UNIQUE NOT NULL,
     response_type TEXT NOT NULL CHECK (response_type IN ('sticker', 'audio', 'text', 'mixed')),
     sticker_path TEXT,
     audio_path TEXT,
@@ -467,6 +468,16 @@ INSERT OR IGNORE INTO auto_responses (keyword, response_type, text_response, is_
 ('belajar', 'text', '📚 Bagus! Semangat belajarnya! Coba ketik .help untuk melihat materi pembelajaran.', 1, 'system'),
 ('thanks', 'text', '🙏 Sama-sama! Senang bisa membantu pembelajaran kalian!', 1, 'system'),
 ('terima kasih', 'text', '🙏 Sama-sama! Semoga ilmunya bermanfaat!', 1, 'system');
+`
+
+// SQL untuk menghapus auto responses duplikat, mempertahankan yang pertama
+const deleteDuplicateAutoResponses = `
+DELETE FROM auto_responses
+WHERE id NOT IN (
+    SELECT MIN(id)
+    FROM auto_responses
+    GROUP BY keyword
+);
 `
 
 // SQL untuk membuat tabel forbidden_words
