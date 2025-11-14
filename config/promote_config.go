@@ -77,33 +77,7 @@ func getAdminNumbers() []string {
 	return cleanNumbers
 }
 
-// getEnvIntOrDefault mengambil nilai integer dari environment variable
-func getEnvIntOrDefault(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		// Simple parsing (bisa diperbaiki dengan strconv.Atoi)
-		switch value {
-		case "1":
-			return 1
-		case "2":
-			return 2
-		case "3":
-			return 3
-		case "4":
-			return 4
-		case "6":
-			return 6
-		case "8":
-			return 8
-		case "12":
-			return 12
-		case "24":
-			return 24
-		default:
-			return defaultValue
-		}
-	}
-	return defaultValue
-}
+// Note: getEnvIntOrDefault moved to config/config.go to avoid duplication
 
 // IsAdmin mengecek apakah nomor adalah admin
 func (c *PromoteConfig) IsAdmin(phoneNumber string) bool {

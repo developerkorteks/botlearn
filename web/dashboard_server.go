@@ -2,11 +2,20 @@
 package web
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
+	"time"
 
+	"go.mau.fi/whatsmeow"
+	waLog "go.mau.fi/whatsmeow/util/log"
+	
 	"github.com/nabilulilalbab/promote/database"
 	"github.com/nabilulilalbab/promote/utils"
 )
@@ -17,7 +26,16 @@ type DashboardServer struct {
 	logger         *utils.Logger
 	adminNumbers   []string
 	mediaPath      string
-	whatsappClient interface{} // WhatsApp client untuk akses grup
+	whatsappClient *whatsmeow.Client // WhatsApp client untuk akses grup
+	waManager      *utils.WAManager  // Enhanced WhatsApp Manager
+	qrGenerator    *utils.QRCodeGenerator
+	dashboardQR    *utils.DashboardQRHandler
+	
+	// QR and Pairing code state
+	currentQRCode    string
+	currentPairingCode string
+	qrMutex          sync.RWMutex
+	pairingMutex     sync.RWMutex
 }
 
 // NewDashboardServer creates a new dashboard server
@@ -31,8 +49,26 @@ func NewDashboardServer(repo database.Repository, logger *utils.Logger, adminNum
 }
 
 // SetWhatsAppClient sets the WhatsApp client for group access
-func (s *DashboardServer) SetWhatsAppClient(client interface{}) {
+func (s *DashboardServer) SetWhatsAppClient(client *whatsmeow.Client) {
 	s.whatsappClient = client
+	// Setup dashboard QR handler when both client and QR generator available
+	if s.qrGenerator != nil {
+		s.dashboardQR = utils.NewDashboardQRHandler(client, s.logger, s.qrGenerator)
+	}
+}
+
+// SetWAManager sets the enhanced WhatsApp manager for pairing
+func (s *DashboardServer) SetWAManager(waManager *utils.WAManager) {
+	s.waManager = waManager
+}
+
+// SetQRGenerator sets the QR code generator
+func (s *DashboardServer) SetQRGenerator(qrGen *utils.QRCodeGenerator) {
+	s.qrGenerator = qrGen
+	// Setup dashboard QR handler when both client and QR generator available
+	if s.whatsappClient != nil {
+		s.dashboardQR = utils.NewDashboardQRHandler(s.whatsappClient, s.logger, qrGen)
+	}
 }
 
 // StartServer starts the web dashboard server
@@ -48,6 +84,18 @@ func (s *DashboardServer) StartServer(port int) error {
 	http.HandleFunc("/api/stats", s.handleStats)
 	http.HandleFunc("/api/xray_converters", s.handleXRayConverters)
 	http.HandleFunc("/api/xray_converters/test", s.handleXRayConverterTest)
+	
+	// WhatsApp Pairing endpoints
+	http.HandleFunc("/api/whatsapp/status", s.handleWhatsAppStatus)
+	http.HandleFunc("/api/whatsapp/qr", s.handleQRPairing)
+	http.HandleFunc("/api/whatsapp/qr/cancel", s.handleQRCancel)
+	http.HandleFunc("/api/whatsapp/qr-image", s.handleQRImage)
+	http.HandleFunc("/api/whatsapp/phone", s.handlePhonePairing)
+	http.HandleFunc("/api/whatsapp/disconnect", s.handleDisconnect)
+	http.HandleFunc("/api/whatsapp/reconnect", s.handleReconnect)
+	http.HandleFunc("/api/whatsapp/logout", s.handleLogout)
+	http.HandleFunc("/api/whatsapp/pairing-code", s.handleGetPairingCode)
+	http.HandleFunc("/api/whatsapp/full_reset", s.handleFullReset)
 	
 	// Static files
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static/"))))
@@ -125,7 +173,10 @@ func (s *DashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request
                     <a class="nav-link" href="#" onclick="showTab('stats')">
                         <i class="fas fa-chart-bar"></i> Statistik
                     </a>
-                    <a class="nav-link" href="#" onclick="showTab('xray')">
+                    <a class="nav-link" href="#" onclick="showTab('whatsapp')">
+                        <i class="fab fa-whatsapp"></i> WhatsApp Pairing
+                    </a>
+                    <a class="nav-link" href="#" onclick="showTab('xray-tab')">
                         <i class="fas fa-exchange-alt"></i> XRay Converter
                     </a>
                 </nav>
@@ -187,6 +238,222 @@ func (s *DashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request
                     <div id="autoremove-group-list"></div>
                 </div>
                 
+                <!-- WhatsApp Pairing Tab -->
+                <div id="whatsapp" class="tab-content" style="display: none;">
+                    <h3><i class="fab fa-whatsapp text-success"></i> WhatsApp Pairing Management</h3>
+                    
+                    <!-- Status Card -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <div class="card">
+                                <div class="card-header bg-success text-white">
+                                    <h5><i class="fas fa-info-circle"></i> Status Koneksi WhatsApp</h5>
+                                </div>
+                                <div class="card-body">
+                                    <div class="row" id="whatsapp-status">
+                                        <div class="col-md-3">
+                                            <div class="text-center">
+                                                <div class="status-indicator mb-2" id="connection-status">
+                                                    <i class="fas fa-circle text-secondary fa-2x"></i>
+                                                </div>
+                                                <small>Koneksi</small>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <div class="text-center">
+                                                <div class="status-indicator mb-2" id="login-status">
+                                                    <i class="fas fa-circle text-secondary fa-2x"></i>
+                                                </div>
+                                                <small>Login Status</small>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <h6>Informasi Device:</h6>
+                                            <p class="mb-1"><strong>Nomor:</strong> <span id="phone-number">-</span></p>
+                                            <p class="mb-1"><strong>Device:</strong> <span id="device-name">-</span></p>
+                                            <button class="btn btn-outline-primary btn-sm" onclick="refreshWhatsAppStatus()">
+                                                <i class="fas fa-sync-alt"></i> Refresh Status
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Pairing Methods -->
+                    <div class="row">
+                        <!-- QR Code Pairing -->
+                        <div class="col-md-6 mb-4">
+                            <div class="card h-100">
+                                <div class="card-header bg-primary text-white">
+                                    <h5><i class="fas fa-qrcode"></i> QR Code Pairing</h5>
+                                </div>
+                                <div class="card-body text-center">
+                                    <p>Scan QR code dengan WhatsApp untuk pairing cepat</p>
+                                    
+                                    <!-- QR Code Display Area -->
+                                    <div class="mb-3" id="qr-display-area">
+                                        <div id="qr-placeholder" style="display: block;">
+                                            <i class="fas fa-qrcode fa-4x text-primary"></i>
+                                            <p class="mt-2 text-muted">QR code akan muncul di sini</p>
+                                        </div>
+                                        <div id="qr-image-container" style="display: none;">
+                                            <img id="qr-image" src="" alt="QR Code" class="img-fluid" style="max-width: 300px; max-height: 300px;">
+                                            <div class="mt-2">
+                                                <small class="text-success">
+                                                    <i class="fas fa-mobile-alt"></i> Scan dengan WhatsApp Anda
+                                                </small>
+                                            </div>
+                                        </div>
+                                        <div id="qr-loading" style="display: none;">
+                                            <div class="spinner-border text-primary" role="status">
+                                                <span class="visually-hidden">Loading...</span>
+                                            </div>
+                                            <p class="mt-2 text-muted">Generating QR code...</p>
+                                        </div>
+                                    </div>
+                                    
+                                    <button class="btn btn-primary btn-lg" onclick="startQRPairing()" id="qr-pairing-btn">
+                                        <i class="fas fa-qrcode"></i> Start QR Pairing
+                                    </button>
+                                    
+                                    <button class="btn btn-secondary ms-2" onclick="refreshQRCode()" id="qr-refresh-btn" style="display: none;">
+                                        <i class="fas fa-sync-alt"></i> Refresh QR
+                                    </button>
+                                    <button class="btn btn-outline-danger ms-2" onclick="cancelQRPairing()" id="qr-cancel-btn">
+                                        <i class="fas fa-ban"></i> Cancel
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Phone Number Pairing -->
+                        <div class="col-md-6 mb-4">
+                            <div class="card h-100">
+                                <div class="card-header bg-success text-white">
+                                    <h5><i class="fas fa-phone"></i> Phone Number Pairing</h5>
+                                </div>
+                                <div class="card-body">
+                                    <p>Gunakan nomor telepon untuk mendapatkan pairing code</p>
+                                    <div class="mb-3">
+                                        <label class="form-label">Nomor Telepon:</label>
+                                        <input type="tel" class="form-control" id="phone-input" 
+                                               placeholder="Contoh: 6281234567890" maxlength="15">
+                                        <small class="text-muted">Format: Kode negara + nomor (tanpa +)</small>
+                                    </div>
+                                    <button class="btn btn-success btn-lg w-100" onclick="startPhonePairing()" id="phone-pairing-btn">
+                                        <i class="fas fa-phone"></i> Get Pairing Code
+                                    </button>
+                                    
+                                    <!-- Pairing Code Display Area -->
+                                    <div class="mt-3" id="pairing-code-area" style="display: none;">
+                                        <div class="alert alert-success text-center">
+                                            <h4><i class="fas fa-key"></i> Pairing Code:</h4>
+                                            <h1 id="pairing-code-display" class="font-monospace"></h1>
+                                            <small>Masukkan code ini di WhatsApp > Linked Devices</small>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="mt-3">
+                                        <small class="text-muted">
+                                            Pairing code akan muncul di atas setelah nomor diverifikasi
+                                        </small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Connection Controls -->
+                    <div class="row">
+                        <div class="col-12">
+                            <div class="card">
+                                <div class="card-header bg-warning text-dark">
+                                    <h5><i class="fas fa-cog"></i> Connection Controls</h5>
+                                </div>
+                                <div class="card-body">
+                                    <div class="btn-group me-2" role="group">
+                                        <button class="btn btn-outline-primary" onclick="reconnectWhatsApp()">
+                                            <i class="fas fa-sync-alt"></i> Reconnect
+                                        </button>
+                                        <button class="btn btn-outline-warning" onclick="disconnectWhatsApp()">
+                                            <i class="fas fa-unlink"></i> Disconnect
+                                        </button>
+                                        <button class="btn btn-outline-danger" onclick="safeLogoutWhatsApp()">
+                                            <i class="fas fa-sign-out-alt"></i> Safe Logout
+                                        </button>
+                                        <button class="btn btn-danger" onclick="fullResetWhatsApp()">
+                                            <i class="fas fa-skull-crossbones"></i> Full Reset (Hard)
+                                        </button>
+                                    </div>
+                                    <div class="mt-3">
+                                        <small class="text-muted">
+                                            <strong>Reconnect:</strong> Hubungkan ulang jika sudah login<br>
+                                            <strong>Disconnect:</strong> Putus koneksi WhatsApp<br>
+                                            <strong>Safe Logout:</strong> Logout aman dari WhatsApp (perlu QR lagi)
+                                        </small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Instructions -->
+                    <div class="row mt-4">
+                        <div class="col-12">
+                            <div class="card">
+                                <div class="card-header bg-info text-white">
+                                    <h5><i class="fas fa-info-circle"></i> Petunjuk Penggunaan</h5>
+                                </div>
+                                <div class="card-body">
+                                    <h6><i class="fas fa-qrcode"></i> QR Code Pairing:</h6>
+                                    <ol>
+                                        <li>Klik "Start QR Pairing"</li>
+                                        <li>QR code akan muncul di terminal/console</li>
+                                        <li>Buka WhatsApp > Menu > Linked Devices</li>
+                                        <li>Scan QR code yang muncul di terminal</li>
+                                    </ol>
+                                    
+                                    <h6 class="mt-3"><i class="fas fa-phone"></i> Phone Number Pairing:</h6>
+                                    <ol>
+                                        <li>Masukkan nomor telepon (tanpa +, contoh: 6281234567890)</li>
+                                        <li>Klik "Get Pairing Code"</li>
+                                        <li>Pairing code akan muncul di terminal</li>
+                                        <li>Buka WhatsApp > Menu > Linked Devices > Link a Device</li>
+                                        <li>Pilih "Link with phone number instead"</li>
+                                        <li>Masukkan pairing code yang muncul di terminal</li>
+                                    </ol>
+                                    
+                                    <div class="alert alert-warning mt-3">
+                                        <i class="fas fa-exclamation-triangle"></i>
+                                        <strong>Penting:</strong> Pastikan terminal/console terlihat untuk melihat QR code atau pairing code!
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Stats Tab -->
+                <div id="stats-tab" class="tab-content" style="display:none;">
+                    <h2><i class="fas fa-chart-bar"></i> Statistik Bot</h2>
+                    <div id="stats-content">
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="card">
+                                    <div class="card-body">
+                                        <h5>Statistik akan dimuat...</h5>
+                                        <div class="spinner-border" role="status">
+                                            <span class="visually-hidden">Loading...</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- XRay Converter Tab -->
                 <div id="xray-tab" class="tab-content" style="display:none;">
                     <h2><i class="fas fa-exchange-alt"></i> Kelola XRay Converter</h2>
@@ -766,19 +1033,47 @@ func (s *DashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request
             const navLinks = document.querySelectorAll('.nav-link');
             navLinks.forEach(link => link.classList.remove('active'));
             
-            document.getElementById(tabName + '-tab').style.display = 'block';
+            // Handle different tab naming conventions
+            let targetElement;
             
-            if (event && event.target) {
-                event.target.classList.add('active');
+            // Map tab names to their actual IDs
+            const tabIdMap = {
+                'groups': 'groups-tab',
+                'commands': 'commands-tab', 
+                'autoresponses': 'autoresponses-tab',
+                'autoremove': 'autoremove-tab',
+                'stats': 'stats-tab',
+                'whatsapp': 'whatsapp',
+                'xray-tab': 'xray-tab'
+            };
+            
+            const actualId = tabIdMap[tabName] || tabName;
+            targetElement = document.getElementById(actualId);
+            
+            if (targetElement) {
+                targetElement.style.display = 'block';
+            }
+            
+            // Update active tab styling
+            const activeTab = document.querySelector('.nav-link.active');
+            if (activeTab) {
+                activeTab.classList.remove('active');
+            }
+            
+            // Find and activate the clicked tab
+            const clickedTab = document.querySelector('a[onclick*="' + tabName + '"]');
+            if (clickedTab) {
+                clickedTab.classList.add('active');
             }
             
             switch(tabName) {
                 case 'groups': refreshGroups(); break;
                 case 'commands': refreshCommands(); break;
                 case 'autoresponses': refreshAutoResponses(); break;
-                case 'xray': refreshXRayConverters(); break;
+                case 'xray-tab': refreshXRayConverters(); break;
                 case 'autoremove': refreshAutoRemoveTab(); break;
                 case 'stats': refreshStats(); break;
+                case 'whatsapp': refreshWhatsAppStatus(); break;
             }
         }
 
@@ -1900,6 +2195,358 @@ func (s *DashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request
             });
         }
 
+        // === WHATSAPP PAIRING FUNCTIONS ===
+        
+        function refreshWhatsAppStatus() {
+            fetch('/api/whatsapp/status')
+                .then(response => response.json())
+                .then(data => {
+                    updateWhatsAppStatusUI(data);
+                })
+                .catch(error => {
+                    console.error('Error fetching WhatsApp status:', error);
+                });
+        }
+
+        function updateWhatsAppStatusUI(status) {
+            const connectionStatus = document.getElementById('connection-status');
+            const loginStatus = document.getElementById('login-status');
+            const phoneNumber = document.getElementById('phone-number');
+            const deviceName = document.getElementById('device-name');
+
+            // Update connection status
+            if (status.connected) {
+                connectionStatus.innerHTML = '<i class="fas fa-circle text-success fa-2x"></i>';
+            } else {
+                connectionStatus.innerHTML = '<i class="fas fa-circle text-danger fa-2x"></i>';
+            }
+
+            // Update login status
+            if (status.logged_in) {
+                loginStatus.innerHTML = '<i class="fas fa-circle text-success fa-2x"></i>';
+            } else {
+                loginStatus.innerHTML = '<i class="fas fa-circle text-warning fa-2x"></i>';
+            }
+
+            // Update device info
+            phoneNumber.textContent = status.phone_number || '-';
+            deviceName.textContent = status.device_name || '-';
+        }
+
+        let qrPairingInProgress = false;
+
+        function startQRPairing() {
+            const btn = document.getElementById('qr-pairing-btn');
+            const refreshBtn = document.getElementById('qr-refresh-btn');
+            if (qrPairingInProgress) { return; }
+            qrPairingInProgress = true;
+            
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Starting QR Pairing...';
+
+            // Show loading state
+            showQRLoading();
+
+            fetch('/api/whatsapp/qr', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showAlert('success', data.message);
+                    // Start polling for QR code
+                    setTimeout(() => pollForQRCode(), 2000);
+                    refreshBtn.style.display = 'inline-block';
+                } else {
+                    showAlert('error', data.message);
+                    showQRPlaceholder();
+                }
+            })
+            .catch(error => {
+                console.error('Error starting QR pairing:', error);
+                showAlert('error', 'Error starting QR pairing: ' + error.message);
+                showQRPlaceholder();
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-qrcode"></i> Start QR Pairing';
+            });
+        }
+
+        function pollForQRCode() {
+            fetch('/api/whatsapp/qr-image')
+                .then(response => response.json())
+                .then(data => {
+                    console.log('QR polling response:', data);
+                    
+                    if (data.success && data.qr_image) {
+                        showQRImage(data.qr_image);
+                        showAlert('info', 'QR code siap! Scan dengan WhatsApp Anda.');
+                        // Continue polling untuk check if success
+                        setTimeout(() => pollForStatus(), 5000);
+                    } else {
+                        // Continue polling if QR not ready
+                        console.log('QR not ready, continuing polling...');
+                        setTimeout(() => pollForQRCode(), 2000);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error polling QR code:', error);
+                    setTimeout(() => pollForQRCode(), 3000); // Retry in 3 seconds
+                });
+        }
+
+        function pollForStatus() {
+            if (pairingInProgress) { return; }
+            fetch('/api/whatsapp/status')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.logged_in && data.connected) {
+                        showQRPlaceholder();
+                        showAlert('success', 'QR pairing berhasil! WhatsApp terhubung.');
+                        refreshWhatsAppStatus();
+                    } else {
+                        // Continue polling
+                        setTimeout(() => pollForStatus(), 3000);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error polling status:', error);
+                });
+        }
+
+        function cancelQRPairing() {
+            fetch('/api/whatsapp/qr/cancel', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }
+            }).then(r => r.json()).then(data => {
+                if (data.success) {
+                    showAlert('warning', data.message);
+                    qrPairingInProgress = false;
+                    showQRPlaceholder();
+                } else {
+                    showAlert('error', data.message || 'Gagal membatalkan QR pairing');
+                }
+            }).catch(err => {
+                console.error('Cancel QR error:', err);
+            });
+        }
+
+        function refreshQRCode() {
+            showQRLoading();
+            pollForQRCode();
+        }
+
+        function showQRPlaceholder() {
+            document.getElementById('qr-placeholder').style.display = 'block';
+            document.getElementById('qr-image-container').style.display = 'none';
+            document.getElementById('qr-loading').style.display = 'none';
+            document.getElementById('qr-refresh-btn').style.display = 'none';
+        }
+
+        function showQRLoading() {
+            document.getElementById('qr-placeholder').style.display = 'none';
+            document.getElementById('qr-image-container').style.display = 'none';
+            document.getElementById('qr-loading').style.display = 'block';
+        }
+
+        function showQRImage(base64Image) {
+            document.getElementById('qr-placeholder').style.display = 'none';
+            document.getElementById('qr-loading').style.display = 'none';
+            document.getElementById('qr-image-container').style.display = 'block';
+            document.getElementById('qr-image').src = base64Image;
+        }
+
+        function showPairingCode(code) {
+            document.getElementById('pairing-code-display').textContent = code;
+            document.getElementById('pairing-code-area').style.display = 'block';
+            showAlert('success', 'Pairing code siap! Masukkan di WhatsApp Anda.');
+        }
+
+        function hidePairingCode() {
+            document.getElementById('pairing-code-area').style.display = 'none';
+        }
+
+        function pollForPairingCode() {
+            fetch('/api/whatsapp/pairing-code')
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Pairing code polling response:', data);
+                    
+                    if (data.success && data.pairing_code) {
+                        showPairingCode(data.pairing_code);
+                        showAlert('success', 'Pairing code siap! Masukkan di WhatsApp Anda.');
+                        // Continue polling untuk check if success
+                        setTimeout(() => pollForStatus(), 5000);
+                    } else {
+                        // Continue polling if code not ready
+                        console.log('Pairing code not ready, continuing polling...');
+                        setTimeout(() => pollForPairingCode(), 2000);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error polling pairing code:', error);
+                    setTimeout(() => pollForPairingCode(), 3000);
+                });
+        }
+
+        let pairingInProgress = false;
+
+        function startPhonePairing() {
+            const phoneInput = document.getElementById('phone-input');
+            const btn = document.getElementById('phone-pairing-btn');
+            const phoneNumber = phoneInput.value.trim();
+
+            if (!phoneNumber) {
+                showAlert('error', 'Masukkan nomor telepon!');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Getting Pairing Code...';
+            pairingInProgress = true;
+
+            fetch('/api/whatsapp/phone', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    phone_number: phoneNumber
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showAlert('success', data.message);
+                    // Start polling for pairing code
+                    setTimeout(() => pollForPairingCode(), 3000);
+                } else {
+                    showAlert('error', data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error starting phone pairing:', error);
+                showAlert('error', 'Error starting phone pairing: ' + error.message);
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-phone"></i> Get Pairing Code';
+            });
+        }
+
+        function reconnectWhatsApp() {
+            if (!confirm('Reconnect WhatsApp connection?')) {
+                return;
+            }
+
+            fetch('/api/whatsapp/reconnect', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showAlert('success', data.message);
+                    setTimeout(refreshWhatsAppStatus, 3000);
+                } else {
+                    showAlert('error', data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error reconnecting WhatsApp:', error);
+                showAlert('error', 'Error reconnecting: ' + error.message);
+            });
+        }
+
+        function disconnectWhatsApp() {
+            if (!confirm('Disconnect WhatsApp? Bot akan berhenti menerima pesan.')) {
+                return;
+            }
+
+            fetch('/api/whatsapp/disconnect', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showAlert('success', data.message);
+                    setTimeout(refreshWhatsAppStatus, 2000);
+                } else {
+                    showAlert('error', data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error disconnecting WhatsApp:', error);
+                showAlert('error', 'Error disconnecting: ' + error.message);
+            });
+        }
+
+        function safeLogoutWhatsApp() {
+            if (!confirm('⚠️ SAFE LOGOUT dari WhatsApp?\\n\\nIni akan:\\n• Logout aman dari WhatsApp\\n• Hapus session dengan benar\\n• Perlu QR pairing lagi\\n\\nGunakan ini untuk mencegah database corruption.')) {
+                return;
+            }
+
+            fetch('/api/whatsapp/logout', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showAlert('success', data.message + '\\n\\nGunakan QR pairing untuk login ulang.');
+                    // Reset UI state
+                    showQRPlaceholder();
+                    hidePairingCode();
+                    // Refresh status after logout completes
+                    setTimeout(refreshWhatsAppStatus, 5000);
+                } else {
+                    showAlert('error', data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error during safe logout:', error);
+                showAlert('error', 'Error during logout: ' + error.message);
+            });
+        }
+
+        function fullResetWhatsApp() {
+            if (!confirm('⚠️ FULL RESET akan menghapus file session.db dan QR file.\n\nLanjutkan?')) { return; }
+            fetch('/api/whatsapp/full_reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }})
+              .then(r => r.json())
+              .then(data => {
+                  if (data.success) {
+                      showAlert('warning', data.message);
+                      showQRPlaceholder(); hidePairingCode();
+                      setTimeout(refreshWhatsAppStatus, 1000);
+                  } else { showAlert('error', data.message || 'Full reset gagal'); }
+              }).catch(err => {
+                  console.error('Full reset error:', err);
+                  showAlert('error', 'Full reset error: ' + err.message);
+              });
+        }
+
+        // Auto-refresh WhatsApp status when tab is shown
+        document.addEventListener('DOMContentLoaded', function() {
+            // Refresh status when WhatsApp tab is shown
+            const originalShowTab = window.showTab;
+            window.showTab = function(tabName) {
+                originalShowTab(tabName);
+                if (tabName === 'whatsapp') {
+                    refreshWhatsAppStatus();
+                }
+            };
+        });
+
     </script>
 </body>
 </html>`
@@ -2373,4 +3020,528 @@ func (s *DashboardServer) handleXRayConverterTest(w http.ResponseWriter, r *http
 	}
 
 	json.NewEncoder(w).Encode(response)
+}
+
+// === WHATSAPP PAIRING HANDLERS ===
+
+// handleWhatsAppStatus mengembalikan status koneksi WhatsApp
+func (s *DashboardServer) handleWhatsAppStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	
+	status := map[string]interface{}{
+		"connected":    false,
+		"logged_in":    false,
+		"phone_number": "",
+		"device_name":  "",
+		"last_seen":    "",
+		"session_healthy": true,
+	}
+
+	if s.waManager != nil {
+		status["connected"] = s.waManager.IsConnected()
+		status["logged_in"] = s.waManager.IsLoggedIn()
+		
+		if s.whatsappClient != nil && s.whatsappClient.Store.ID != nil {
+			status["phone_number"] = s.whatsappClient.Store.ID.User
+			status["device_name"] = fmt.Sprintf("Device-%d", s.whatsappClient.Store.ID.Device)
+		}
+		
+		// Get manager stats
+		stats := s.waManager.GetStats()
+		status["stats"] = stats
+	}
+
+	json.NewEncoder(w).Encode(status)
+}
+
+// handleQRCancel membatalkan proses QR pairing aktif
+func (s *DashboardServer) handleQRCancel(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.dashboardQR != nil {
+		s.dashboardQR.Cancel()
+	}
+	// Clear QR file to avoid stale
+	_ = os.Remove("data/qrcode.png")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "QR pairing dibatalkan",
+	})
+}
+
+// handleQRPairing menangani pairing via QR code
+func (s *DashboardServer) handleQRPairing(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.waManager == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "WhatsApp Manager tidak tersedia",
+		})
+		return
+	}
+
+	// Check if already logged in
+	if s.waManager.IsLoggedIn() {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Sudah login, logout dulu untuk QR pairing baru",
+		})
+		return
+	}
+
+	// Remove old QR file so dashboard won't show stale image
+	_ = os.Remove("data/qrcode.png")
+
+	// Start QR pairing using dashboard QR handler
+	go func() {
+		if s.dashboardQR == nil {
+			s.logger.Error("❌ Dashboard QR handler tidak tersedia")
+			return
+		}
+		
+		err := s.dashboardQR.StartDashboardQRPairing()
+		if err != nil {
+			s.logger.Errorf("❌ QR pairing gagal: %v", err)
+		}
+	}()
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "QR pairing dimulai, QR code akan muncul di bawah",
+		"qr_ready": false,
+	})
+}
+
+// handleQRImage mengembalikan QR code sebagai base64 image
+func (s *DashboardServer) handleQRImage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// QUICK FIX: Check existing QR file first
+	qrPath := "data/qrcode.png"
+	
+	// Check if QR file exists (from terminal generation)
+	if _, err := os.Stat(qrPath); err == nil {
+		s.logger.Debug("📱 Using existing QR file for dashboard")
+		
+		// Read existing QR file
+		imageData, err := ioutil.ReadFile(qrPath)
+		if err == nil {
+			// Convert to base64
+			base64Image := base64.StdEncoding.EncodeToString(imageData)
+			
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success":  true,
+				"qr_image": "data:image/png;base64," + base64Image,
+				"source":   "existing_file",
+				"message":  "QR code loaded from file",
+			})
+			return
+		}
+	}
+
+	// Fallback: Get QR code from dashboard QR handler
+	var qrCode string
+	if s.dashboardQR != nil {
+		qrCode = s.dashboardQR.GetCurrentQRCode()
+	}
+
+	if qrCode == "" {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "QR code belum tersedia, mulai pairing dulu",
+			"qr_active": s.dashboardQR != nil && s.dashboardQR.IsActive(),
+		})
+		return
+	}
+
+	// Generate QR code image using custom path method
+	qrPath = "data/qr_temp.png"
+	err := s.qrGenerator.GenerateQRToFile(qrCode, qrPath)
+	if err != nil {
+		s.logger.Errorf("Gagal generate QR image: %v", err)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Gagal generate QR image: " + err.Error(),
+		})
+		return
+	}
+
+	// Read image file and convert to base64
+	imageData, err := ioutil.ReadFile(qrPath)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Gagal membaca QR image",
+		})
+		return
+	}
+
+	// Clean up temp file
+	os.Remove(qrPath)
+
+	// Convert to base64
+	base64Image := base64.StdEncoding.EncodeToString(imageData)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"qr_code": qrCode,
+		"qr_image": "data:image/png;base64," + base64Image,
+	})
+}
+
+// handlePhonePairing menangani pairing via nomor telepon
+func (s *DashboardServer) handlePhonePairing(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var request struct {
+		PhoneNumber string `json:"phone_number"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Invalid request format",
+		})
+		return
+	}
+
+	if s.whatsappClient == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "WhatsApp client tidak tersedia",
+		})
+		return
+	}
+
+	// Validate phone number format
+	phoneNumber := strings.ReplaceAll(request.PhoneNumber, " ", "")
+	phoneNumber = strings.ReplaceAll(phoneNumber, "-", "")
+	phoneNumber = strings.ReplaceAll(phoneNumber, "+", "")
+	
+	if len(phoneNumber) < 10 || len(phoneNumber) > 15 {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Format nomor telepon tidak valid",
+		})
+		return
+	}
+
+	// Start phone pairing process
+	go func() {
+		s.logger.Infof("📱 Memulai pairing dengan nomor: %s", phoneNumber)
+		
+		// Request pairing code using WAManager (safe flow)
+		if s.waManager == nil {
+			s.logger.Error("WAManager tidak tersedia")
+			return
+		}
+		code, err := s.waManager.PairByPhone(context.Background(), s.whatsappClient, phoneNumber)
+		if err != nil {
+			s.logger.Errorf("❌ Gagal request pairing code: %v", err)
+			return
+		}
+		
+		s.logger.Successf("🔑 Pairing code: %s", code)
+		s.logger.Info("📋 Masukkan code ini di WhatsApp > Linked Devices > Link a Device")
+		
+		// Store pairing code untuk dashboard
+		s.pairingMutex.Lock()
+		s.currentPairingCode = code
+		s.pairingMutex.Unlock()
+		
+		s.logger.Info("✅ Pairing code tersedia di dashboard")
+		
+		// Refresh main client and reconnect so dashboard sees logged-in state
+		go func() {
+			defer func() { recover() }()
+			if s.waManager == nil { return }
+			deviceStore, err := s.waManager.Container.GetFirstDevice(context.Background())
+			if err != nil {
+				s.logger.Errorf("Gagal ambil device store setelah pairing: %v", err)
+				return
+			}
+			clientLog := waLog.Stdout("WhatsApp", "INFO", true)
+			newClient := whatsmeow.NewClient(deviceStore, clientLog)
+			s.whatsappClient = newClient
+			s.waManager.Client = newClient
+			newClient.EnableAutoReconnect = true
+			newClient.DisableLoginAutoReconnect = false
+			if err := s.waManager.ConnectSafely(); err != nil {
+				s.logger.Errorf("Reconnect setelah phone pairing gagal: %v", err)
+			} else {
+				s.logger.Success("Reconnect setelah phone pairing berhasil")
+			}
+		}()
+	}()
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Pairing code generation started",
+		"phone":   phoneNumber,
+	})
+}
+
+// handleDisconnect menangani disconnect WhatsApp
+func (s *DashboardServer) handleDisconnect(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.waManager == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "WhatsApp Manager tidak tersedia",
+		})
+		return
+	}
+
+	s.waManager.Disconnect()
+	s.logger.Info("🔌 WhatsApp disconnected via dashboard")
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "WhatsApp berhasil di-disconnect",
+	})
+}
+
+// handleReconnect menangani reconnect WhatsApp
+func (s *DashboardServer) handleReconnect(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.waManager == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "WhatsApp Manager tidak tersedia",
+		})
+		return
+	}
+
+	if !s.waManager.IsLoggedIn() {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Belum login, gunakan QR atau phone pairing dulu",
+		})
+		return
+	}
+
+	// Reconnect in background
+	go func() {
+		s.logger.Info("🔄 Reconnecting WhatsApp via dashboard...")
+		// Re-enable auto reconnect before connecting
+		if s.whatsappClient != nil {
+			s.whatsappClient.EnableAutoReconnect = true
+			s.whatsappClient.DisableLoginAutoReconnect = false
+		}
+		err := s.waManager.ConnectSafely()
+		if err != nil {
+			s.logger.Errorf("❌ Reconnect gagal: %v", err)
+		} else {
+			s.logger.Success("✅ Reconnect berhasil!")
+		}
+	}()
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Reconnecting WhatsApp...",
+	})
+}
+
+// handleLogout menangani true logout (benar-benar hapus session)
+func (s *DashboardServer) handleLogout(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.whatsappClient == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "WhatsApp client tidak tersedia",
+		})
+		return
+	}
+
+	// True logout process
+	go func() {
+		s.logger.Info("🔐 Starting true logout process...")
+		// Disable auto reconnect to avoid background connects
+		if s.whatsappClient != nil {
+			s.whatsappClient.EnableAutoReconnect = false
+			s.whatsappClient.DisableLoginAutoReconnect = true
+		}
+		// Disconnect gracefully
+		if s.waManager != nil {
+			s.waManager.Disconnect()
+		}
+		s.logger.Info("🔌 Disconnected, draining...")
+		time.Sleep(2 * time.Second)
+
+		// Try server-side logout (if socket up it's fine; else ignore)
+		if s.whatsappClient != nil && s.whatsappClient.Store != nil {
+			_ = s.whatsappClient.Logout(context.Background())
+		}
+		// Always clear local store for full reset
+		if s.whatsappClient != nil && s.whatsappClient.Store != nil {
+			if err := s.whatsappClient.Store.Delete(context.Background()); err != nil {
+				s.logger.Errorf("❌ Failed to delete local store: %v", err)
+			} else {
+				s.logger.Success("🧹 Local session store deleted")
+			}
+		}
+		// Reset dashboard states
+		s.pairingMutex.Lock(); s.currentPairingCode = ""; s.pairingMutex.Unlock()
+		s.qrMutex.Lock(); s.currentQRCode = ""; s.qrMutex.Unlock()
+		s.logger.Success("🔐 True logout completed - fresh state ready")
+	}()
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Safe logout initiated - akan perlu QR pairing lagi",
+	})
+}
+
+// handleFullReset melakukan reset penuh session (hapus file DB)
+func (s *DashboardServer) handleFullReset(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "POST")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Batalkan pairing jika aktif
+	if s.dashboardQR != nil {
+		s.dashboardQR.Cancel()
+	}
+	// Matikan auto-reconnect dan disconnect
+	if s.whatsappClient != nil {
+		s.whatsappClient.EnableAutoReconnect = false
+		s.whatsappClient.DisableLoginAutoReconnect = true
+		s.whatsappClient.Disconnect()
+	}
+	// Hapus file session DB dan QR file (termasuk WAL/SHM)
+	_ = os.Remove("data/session.db")
+	_ = os.Remove("data/session.db-wal")
+	_ = os.Remove("data/session.db-shm")
+	_ = os.Remove("data/qrcode.png")
+	// Pastikan folder data ada dan writable
+	_ = os.MkdirAll("data", 0o775)
+	// Reset in-memory states
+	s.pairingMutex.Lock(); s.currentPairingCode = ""; s.pairingMutex.Unlock()
+	s.qrMutex.Lock(); s.currentQRCode = ""; s.qrMutex.Unlock()
+	
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Full reset completed. Silakan mulai pairing dari dashboard.",
+	})
+}
+
+// handleGetPairingCode mengembalikan pairing code yang tersimpan
+func (s *DashboardServer) handleGetPairingCode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	s.pairingMutex.RLock()
+	pairingCode := s.currentPairingCode
+	s.pairingMutex.RUnlock()
+
+	if pairingCode == "" {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"message": "Pairing code belum tersedia",
+		})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":      true,
+		"pairing_code": pairingCode,
+		"message":      "Pairing code ready",
+	})
 }

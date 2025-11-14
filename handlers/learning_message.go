@@ -27,6 +27,9 @@ type LearningMessageHandler struct {
 	
 	// Rate limiting: map[userJID]lastCommandTime
 	commandCooldown    map[string]time.Time
+	
+	// Typing simulator untuk human-like responses
+	typingSimulator    *utils.TypingSimulator
 }
 
 // NewLearningMessageHandler membuat handler baru untuk learning bot
@@ -44,7 +47,46 @@ func NewLearningMessageHandler(
 		logger:             logger,
 		adminNumbers:       adminNumbers,
 		commandCooldown:    make(map[string]time.Time),
+		typingSimulator:    utils.NewTypingSimulator(client, logger),
 	}
+}
+
+// sendMessageWithTyping mengirim pesan dengan simulasi typing yang natural
+func (h *LearningMessageHandler) sendMessageWithTyping(chatJID types.JID, message string) error {
+	// Simulasi typing berdasarkan kompleksitas pesan
+	h.typingSimulator.SmartTypingDelay(chatJID, message)
+	
+	// Kirim pesan setelah simulasi typing selesai
+	_, err := h.client.SendMessage(context.Background(), chatJID, &waProto.Message{
+		Conversation: &message,
+	})
+	
+	if err != nil {
+		h.logger.Errorf("Gagal kirim pesan ke %s: %v", chatJID, err)
+		return err
+	}
+	
+	h.logger.Debugf("✅ Pesan learning terkirim dengan typing delay ke %s", chatJID)
+	return nil
+}
+
+// sendQuickResponse mengirim response cepat dengan delay minimal
+func (h *LearningMessageHandler) sendQuickResponse(chatJID types.JID, message string) error {
+	// Quick delay untuk response singkat
+	h.typingSimulator.QuickDelay(chatJID)
+	
+	// Kirim pesan
+	_, err := h.client.SendMessage(context.Background(), chatJID, &waProto.Message{
+		Conversation: &message,
+	})
+	
+	if err != nil {
+		h.logger.Errorf("Gagal kirim quick response ke %s: %v", chatJID, err)
+		return err
+	}
+	
+	h.logger.Debugf("⚡ Quick response terkirim ke %s", chatJID)
+	return nil
 }
 
 // HandleMessage adalah fungsi utama untuk menangani pesan masuk
@@ -353,30 +395,19 @@ func (h *LearningMessageHandler) sendConversionResult(groupJID string, result *d
 	infoBuilder.WriteString("3. Restart aplikasi setelah config\n\n")
 	infoBuilder.WriteString("📱 _Modified link akan dikirim di pesan berikutnya untuk kemudahan copy..._")
 	
-	// Kirim pesan 1
+	// Kirim pesan 1 dengan typing delay
 	infoText := infoBuilder.String()
-	msg1 := &waProto.Message{
-		Conversation: &infoText,
-	}
-	
-	_, err = h.client.SendMessage(context.Background(), chatJID, msg1)
+	err = h.sendMessageWithTyping(chatJID, infoText)
 	if err != nil {
 		h.logger.Errorf("Failed to send conversion info: %v", err)
 		return
 	}
 	
-	// Delay sedikit sebelum kirim pesan kedua
-	time.Sleep(500 * time.Millisecond)
-	
 	// === PESAN 2: MODIFIED LINK ONLY ===
 	linkText := result.ModifiedLink
 	
-	// Kirim pesan 2
-	msg2 := &waProto.Message{
-		Conversation: &linkText,
-	}
-	
-	_, err = h.client.SendMessage(context.Background(), chatJID, msg2)
+	// Kirim pesan 2 dengan typing delay
+	err = h.sendMessageWithTyping(chatJID, linkText)
 	if err != nil {
 		h.logger.Errorf("Failed to send conversion link: %v", err)
 	} else {
@@ -392,11 +423,7 @@ func (h *LearningMessageHandler) sendErrorMessage(groupJID, errorMsg string) {
 		return
 	}
 	
-	msg := &waProto.Message{
-		Conversation: &errorMsg,
-	}
-	
-	h.client.SendMessage(context.Background(), chatJID, msg)
+	h.sendMessageWithTyping(chatJID, errorMsg)
 }
 
 // getAvailableConverters mendapatkan daftar converter yang tersedia
@@ -463,13 +490,9 @@ func (h *LearningMessageHandler) sendAdminHelp(chatJID types.JID) {
 	h.sendAdminMessage(chatJID, helpText)
 }
 
-// sendAdminMessage mengirim pesan ke admin
+// sendAdminMessage mengirim pesan ke admin dengan typing delay
 func (h *LearningMessageHandler) sendAdminMessage(chatJID types.JID, message string) {
-	msg := &waProto.Message{
-		Conversation: &message,
-	}
-	
-	_, err := h.client.SendMessage(context.Background(), chatJID, msg)
+	err := h.sendMessageWithTyping(chatJID, message)
 	if err != nil {
 		h.logger.Errorf("Failed to send admin message: %v", err)
 	}

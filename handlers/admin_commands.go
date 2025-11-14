@@ -2,10 +2,14 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
 
+	"go.mau.fi/whatsmeow"
+	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 
 	"github.com/nabilulilalbab/promote/services"
@@ -20,6 +24,8 @@ type AdminCommandHandler struct {
 	groupManagerService *services.GroupManagerService
 	logger              *utils.Logger
 	adminNumbers        []string // Daftar nomor admin yang bisa menggunakan command admin
+	client              *whatsmeow.Client
+	typingSimulator     *utils.TypingSimulator
 }
 
 // NewAdminCommandHandler membuat handler baru
@@ -30,6 +36,7 @@ func NewAdminCommandHandler(
 	groupManagerService *services.GroupManagerService,
 	logger *utils.Logger,
 	adminNumbers []string,
+	client *whatsmeow.Client,
 ) *AdminCommandHandler {
 	return &AdminCommandHandler{
 		autoPromoteService:  autoPromoteService,
@@ -38,7 +45,28 @@ func NewAdminCommandHandler(
 		groupManagerService: groupManagerService,
 		logger:              logger,
 		adminNumbers:        adminNumbers,
+		client:              client,
+		typingSimulator:     utils.NewTypingSimulator(client, logger),
 	}
+}
+
+// sendMessageWithTyping mengirim pesan dengan simulasi typing yang natural
+func (h *AdminCommandHandler) sendMessageWithTyping(chatJID types.JID, message string) error {
+	// Simulasi typing berdasarkan kompleksitas pesan
+	h.typingSimulator.SmartTypingDelay(chatJID, message)
+	
+	// Kirim pesan setelah simulasi typing selesai
+	_, err := h.client.SendMessage(context.Background(), chatJID, &waProto.Message{
+		Conversation: &message,
+	})
+	
+	if err != nil {
+		h.logger.Errorf("Gagal kirim pesan admin ke %s: %v", chatJID, err)
+		return err
+	}
+	
+	h.logger.Debugf("✅ Pesan admin terkirim dengan typing delay ke %s", chatJID)
+	return nil
 }
 
 // isAdmin mengecek apakah user adalah admin dengan validasi ketat

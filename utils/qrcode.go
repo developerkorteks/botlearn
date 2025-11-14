@@ -111,3 +111,19 @@ func (q *QRCodeGenerator) GetQRAsString(code string) (string, error) {
 	
 	return qr.ToSmallString(false), nil
 }
+
+// GenerateQRToFile menyimpan QR code ke file path yang ditentukan
+// Berguna untuk dashboard yang perlu menyimpan ke path temporary
+func (q *QRCodeGenerator) GenerateQRToFile(code string, filePath string) error {
+	qr, err := qrcode.New(code, qrcode.Medium)
+	if err != nil {
+		return fmt.Errorf("gagal generate QR code: %w", err)
+	}
+	
+	err = qr.WriteFile(256, filePath)
+	if err != nil {
+		return fmt.Errorf("gagal menyimpan QR code ke %s: %w", filePath, err)
+	}
+	
+	return nil
+}

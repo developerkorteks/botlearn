@@ -50,7 +50,7 @@ func (s *GroupManagerService) GetAllJoinedGroups() ([]GroupInfo, error) {
 	s.logger.Info("Getting all joined groups from WhatsApp...")
 
 	// Ambil semua grup dari WhatsApp client
-	groups, err := s.client.GetJoinedGroups()
+	groups, err := s.client.GetJoinedGroups(context.Background())
 	if err != nil {
 		s.logger.Errorf("Failed to get joined groups: %v", err)
 		return nil, fmt.Errorf("failed to get joined groups: %v", err)

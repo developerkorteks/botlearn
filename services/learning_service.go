@@ -150,7 +150,7 @@ func (s *LearningService) CheckAndHandleForbiddenWord(evt *events.Message) error
 			s.logger.Infof("Forbidden word '%s' found in message from %s in group %s. Removing user...", forbiddenWord.Word, userJID.String(), groupJID.String())
 
 			// Dapatkan info grup untuk JID yang benar
-			groupInfo, err := s.client.GetGroupInfo(groupJID)
+			groupInfo, err := s.client.GetGroupInfo(context.Background(), groupJID)
 			if err != nil {
 				return fmt.Errorf("failed to get group info: %v", err)
 			}
@@ -168,7 +168,7 @@ func (s *LearningService) CheckAndHandleForbiddenWord(evt *events.Message) error
 			}
 
 			// Tendang pengguna dari grup
-			_, err = s.client.UpdateGroupParticipants(groupJID, []types.JID{targetJID}, whatsmeow.ParticipantChangeRemove)
+			_, err = s.client.UpdateGroupParticipants(context.Background(), groupJID, []types.JID{targetJID}, whatsmeow.ParticipantChangeRemove)
 			if err != nil {
 				s.logger.Errorf("Failed to remove user %s from group %s: %v", userJID.String(), groupJID.String(), err)
 				return fmt.Errorf("failed to remove user: %v", err)
@@ -292,7 +292,7 @@ func (s *LearningService) ProcessAutoResponse(groupJID, userJID, messageText str
 
 // ListJoinedGroups mengembalikan daftar grup yang diikuti bot dalam bentuk teks
 func (s *LearningService) ListJoinedGroups() (string, error) {
-	groups, err := s.client.GetJoinedGroups()
+	groups, err := s.client.GetJoinedGroups(context.Background())
 	if err != nil {
 		return "", fmt.Errorf("failed to get joined groups: %v", err)
 	}

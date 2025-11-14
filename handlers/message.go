@@ -11,6 +11,8 @@ import (
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	
+	"github.com/nabilulilalbab/promote/utils"
 )
 
 // MessageHandler adalah struktur yang menangani semua pesan masuk
@@ -27,6 +29,10 @@ type MessageHandler struct {
 	// Auto Promote handlers
 	promoteCommandHandler *PromoteCommandHandler
 	adminCommandHandler   *AdminCommandHandler
+	
+	// Typing simulator untuk human-like responses
+	typingSimulator *utils.TypingSimulator
+	logger          *utils.Logger
 }
 
 // NewMessageHandler membuat handler baru untuk pesan
@@ -34,11 +40,14 @@ type MessageHandler struct {
 // - client: WhatsApp client yang sudah terhubung
 // - autoReplyPersonal: true jika ingin auto reply di chat personal
 // - autoReplyGroup: true jika ingin auto reply di grup (hati-hati spam!)
-func NewMessageHandler(client *whatsmeow.Client, autoReplyPersonal, autoReplyGroup bool) *MessageHandler {
+// - logger: Logger instance untuk debugging
+func NewMessageHandler(client *whatsmeow.Client, autoReplyPersonal, autoReplyGroup bool, logger *utils.Logger) *MessageHandler {
 	return &MessageHandler{
 		client:            client,
 		autoReplyPersonal: autoReplyPersonal,
 		autoReplyGroup:    autoReplyGroup,
+		typingSimulator:   utils.NewTypingSimulator(client, logger),
+		logger:           logger,
 	}
 }
 
@@ -46,6 +55,44 @@ func NewMessageHandler(client *whatsmeow.Client, autoReplyPersonal, autoReplyGro
 func (h *MessageHandler) SetAutoPromoteHandlers(promoteHandler *PromoteCommandHandler, adminHandler *AdminCommandHandler) {
 	h.promoteCommandHandler = promoteHandler
 	h.adminCommandHandler = adminHandler
+}
+
+// sendMessageWithTyping mengirim pesan dengan simulasi typing yang natural
+func (h *MessageHandler) sendMessageWithTyping(chatJID types.JID, message string) error {
+	// Simulasi typing berdasarkan kompleksitas pesan
+	h.typingSimulator.SmartTypingDelay(chatJID, message)
+	
+	// Kirim pesan setelah simulasi typing selesai
+	_, err := h.client.SendMessage(context.Background(), chatJID, &waProto.Message{
+		Conversation: &message,
+	})
+	
+	if err != nil {
+		h.logger.Errorf("Gagal kirim pesan ke %s: %v", chatJID, err)
+		return err
+	}
+	
+	h.logger.Debugf("✅ Pesan terkirim dengan typing delay ke %s", chatJID)
+	return nil
+}
+
+// sendQuickResponse mengirim response cepat dengan delay minimal
+func (h *MessageHandler) sendQuickResponse(chatJID types.JID, message string) error {
+	// Quick delay untuk response singkat
+	h.typingSimulator.QuickDelay(chatJID)
+	
+	// Kirim pesan
+	_, err := h.client.SendMessage(context.Background(), chatJID, &waProto.Message{
+		Conversation: &message,
+	})
+	
+	if err != nil {
+		h.logger.Errorf("Gagal kirim quick response ke %s: %v", chatJID, err)
+		return err
+	}
+	
+	h.logger.Debugf("⚡ Quick response terkirim ke %s", chatJID)
+	return nil
 }
 
 // HandleMessage adalah fungsi utama untuk menangani pesan masuk
@@ -137,7 +184,7 @@ func (h *MessageHandler) handleCommand(evt *events.Message, messageText string) 
 
 	// Kirim response jika ada
 	if response != "" {
-		h.sendMessage(evt.Info.Chat, response)
+		h.sendMessageWithTyping(evt.Info.Chat, response)
 	}
 }
 
@@ -161,7 +208,7 @@ Saya adalah bot otomatis yang siap membantu.
 Ketik */help* untuk melihat command yang tersedia.`
 	}
 
-	h.sendMessage(chatJID, response)
+	h.sendMessageWithTyping(chatJID, response)
 }
 
 // getMessageText mengekstrak teks dari berbagai tipe pesan WhatsApp
@@ -198,22 +245,11 @@ func (h *MessageHandler) isBotMentioned(msg *waProto.Message) bool {
 	return false
 }
 
-// sendMessage mengirim pesan ke chat tertentu
+// sendMessage mengirim pesan ke chat tertentu (DEPRECATED - use sendMessageWithTyping)
+// Function ini tetap ada untuk backward compatibility, tapi sekarang menggunakan typing delay
 func (h *MessageHandler) sendMessage(chatJID types.JID, text string) {
-	// Buat struktur pesan WhatsApp
-	msg := &waProto.Message{
-		Conversation: &text,
-	}
-
-	// Kirim pesan menggunakan client
-	_, err := h.client.SendMessage(context.Background(), chatJID, msg)
-	if err != nil {
-		fmt.Printf("❌ Gagal mengirim pesan: %v\n", err)
-		return
-	}
-
-	// Log pesan yang terkirim
-	fmt.Printf("✅ Pesan terkirim: %s\n", h.truncateString(text, 50))
+	// Redirect ke sendMessageWithTyping untuk consistency
+	h.sendMessageWithTyping(chatJID, text)
 }
 
 // Helper functions untuk pesan informatif

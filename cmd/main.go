@@ -1,17 +1,12 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
 
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/store/sqlstore"
-	waLog "go.mau.fi/whatsmeow/util/log"
-	
 	"github.com/nabilulilalbab/promote/config"
 	"github.com/nabilulilalbab/promote/database"
 	"github.com/nabilulilalbab/promote/handlers"
@@ -39,29 +34,33 @@ func main() {
 	// QR code generator untuk menampilkan QR code visual di terminal
 	qrGen := utils.NewQRCodeGenerator(cfg.QRCodePath)
 	
-	// STEP 4: Setup database untuk session WhatsApp
-	// Database SQLite untuk menyimpan session agar tidak perlu login berulang
-	logger.Info("Menginisialisasi database session...")
-	dbLog := waLog.Noop
-	container, err := sqlstore.New(context.Background(), "sqlite3", "file:"+cfg.DatabasePath+"?_foreign_keys=on", dbLog)
+	// STEP 3.5: Ensure data dir writable
+	if err := os.MkdirAll("data", 0o775); err != nil {
+		fmt.Printf("⚠️ Warning: gagal membuat folder data: %v\n", err)
+	}
+	if f, err := os.CreateTemp("data", ".permcheck_*"); err == nil {
+		_ = f.Close(); _ = os.Remove(f.Name())
+	} else {
+		fmt.Printf("⚠️ Warning: folder data mungkin tidak writable: %v\n", err)
+	}
+
+	// STEP 4: Setup Enhanced WhatsApp Manager dengan anti-spam protection
+	logger.Info("Menginisialisasi Enhanced WhatsApp Manager...")
+	waManager, err := utils.NewWAManager(cfg.DatabasePath, logger)
 	if err != nil {
-		logger.Errorf("Gagal membuat database: %v", err)
+		logger.Errorf("Gagal membuat WhatsApp Manager: %v", err)
 		os.Exit(1)
 	}
 	
-	// STEP 5: Ambil device store dari database
-	// Device store berisi informasi device WhatsApp yang tersimpan
-	deviceStore, err := container.GetFirstDevice(context.Background())
+	// STEP 5: Buat WhatsApp client dengan proteksi anti-spam
+	err = waManager.CreateClient()
 	if err != nil {
-		logger.Errorf("Gagal mendapatkan device store: %v", err)
+		logger.Errorf("Gagal membuat WhatsApp client: %v", err)
 		os.Exit(1)
 	}
 	
-	// STEP 6: Buat WhatsApp client
-	// Client adalah objek utama untuk berinteraksi dengan WhatsApp
-	logger.Info("Membuat WhatsApp client...")
-	clientLog := waLog.Stdout("Client", cfg.LogLevel, true)
-	client := whatsmeow.NewClient(deviceStore, clientLog)
+	// Gunakan client dari manager
+	client := waManager.Client
 	
 	// STEP 7: Setup Learning System
 	logger.Info("Initializing Learning System...")
@@ -91,9 +90,11 @@ func main() {
 	// Setup learning message handler
 	learningMessageHandler := handlers.NewLearningMessageHandler(client, learningService, xrayConverterService, logger, promoteCfg.AdminNumbers)
 	
-	// Setup dashboard server
+	// Setup dashboard server dengan WhatsApp pairing support
 	dashboardServer := web.NewDashboardServer(learningRepo, logger, promoteCfg.AdminNumbers)
 	dashboardServer.SetWhatsAppClient(client)
+	dashboardServer.SetWAManager(waManager)
+	dashboardServer.SetQRGenerator(qrGen)
 	
 	logger.Success("Learning System initialized!")
 	
@@ -150,21 +151,25 @@ func main() {
 	}()
 	logger.Successf("Dashboard server started on http://localhost:%d", port)
 	
-	// STEP 12: Connect ke WhatsApp
-	if client.Store.ID == nil {
-		// Belum login, perlu scan QR code
-		logger.Warning("Belum login, memerlukan QR code...")
-		err = connectWithQR(client, qrGen, logger)
-		if err != nil {
-			logger.Errorf("Gagal connect dengan QR: %v", err)
-			os.Exit(1)
+	// STEP 12: Connect ke WhatsApp dengan Enhanced Protection
+	if !waManager.IsLoggedIn() {
+		// Belum login, pairing dimulai dari dashboard (hindari bentrok QR)
+		autoQR := os.Getenv("AUTO_QR_ON_START") == "true" || os.Getenv("AUTO_QR_ON_START") == "1"
+		if autoQR {
+			logger.Warning("Belum login, AUTO_QR_ON_START=true → memulai QR pairing otomatis...")
+			if err = waManager.ConnectWithQRSafely(qrGen); err != nil {
+				logger.Errorf("Gagal connect dengan QR: %v", err)
+				os.Exit(1)
+			}
+		} else {
+			logger.Warning("Belum login. Mulai pairing dari Dashboard > WhatsApp Pairing.")
 		}
 	} else {
-		// Sudah login sebelumnya, langsung connect
-		logger.Info("Sudah login sebelumnya, connecting...")
-		err = client.Connect()
-		if err != nil {
+		// Sudah login sebelumnya, langsung connect dengan proteksi
+		logger.Info("Sudah login sebelumnya, connecting dengan proteksi anti-spam...")
+		if err = waManager.ConnectSafely(); err != nil {
 			logger.Errorf("Gagal connect: %v", err)
+			logger.Info("💡 Tips: Jika error rate limit, tunggu beberapa menit")
 			os.Exit(1)
 		}
 	}
@@ -215,57 +220,10 @@ func main() {
 		autoPromoteService.StopScheduler()
 	}
 	
-	client.Disconnect()
+	// Disconnect menggunakan enhanced manager
+	waManager.Disconnect()
 	logger.Success("Bot berhasil dihentikan. Sampai jumpa!")
 }
 
-// connectWithQR menangani proses koneksi dengan QR code
-// Fungsi ini akan menampilkan QR code dan menunggu user untuk scan
-func connectWithQR(client *whatsmeow.Client, qrGen *utils.QRCodeGenerator, logger *utils.Logger) error {
-	// Dapatkan channel untuk menerima QR code dari WhatsApp
-	qrChan, err := client.GetQRChannel(context.Background())
-	if err != nil {
-		return err
-	}
-	
-	// Mulai proses koneksi
-	err = client.Connect()
-	if err != nil {
-		return err
-	}
-	
-	// Loop untuk menangani event QR code
-	for evt := range qrChan {
-		switch evt.Event {
-		case "code":
-			// QR code baru diterima, tampilkan ke user
-			logger.Info("QR code diterima, menampilkan...")
-			err = qrGen.GenerateAndDisplay(evt.Code)
-			if err != nil {
-				logger.Errorf("Gagal menampilkan QR code: %v", err)
-				// Tetap lanjut, tampilkan QR code sebagai text
-				logger.Infof("QR Code (text): %s", evt.Code)
-			}
-			
-		case "success":
-			// Login berhasil
-			logger.Success("QR code berhasil di-scan! Login berhasil.")
-			return nil
-			
-		case "timeout":
-			// QR code timeout, akan generate yang baru
-			logger.Warning("QR code timeout, generating QR code baru...")
-			
-		case "error":
-			// Error dalam proses login
-			logger.Error("Error dalam proses login QR code")
-			return fmt.Errorf("QR code login error")
-			
-		default:
-			// Event lain
-			logger.Debugf("QR code event: %s", evt.Event)
-		}
-	}
-	
-	return nil
-}
+// connectWithQR function removed - now using enhanced WAManager.ConnectWithQRSafely()
+// which provides better anti-spam protection and rate limiting

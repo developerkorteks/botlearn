@@ -2,10 +2,13 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
 
+	"go.mau.fi/whatsmeow"
+	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 
@@ -18,6 +21,8 @@ type PromoteCommandHandler struct {
 	autoPromoteService *services.AutoPromoteService
 	templateService    *services.TemplateService
 	logger             *utils.Logger
+	client             *whatsmeow.Client
+	typingSimulator    *utils.TypingSimulator
 }
 
 // NewPromoteCommandHandler membuat handler baru
@@ -25,12 +30,34 @@ func NewPromoteCommandHandler(
 	autoPromoteService *services.AutoPromoteService,
 	templateService *services.TemplateService,
 	logger *utils.Logger,
+	client *whatsmeow.Client,
 ) *PromoteCommandHandler {
 	return &PromoteCommandHandler{
 		autoPromoteService: autoPromoteService,
 		templateService:    templateService,
 		logger:             logger,
+		client:             client,
+		typingSimulator:    utils.NewTypingSimulator(client, logger),
 	}
+}
+
+// sendMessageWithTyping mengirim pesan dengan simulasi typing yang natural
+func (h *PromoteCommandHandler) sendMessageWithTyping(chatJID types.JID, message string) error {
+	// Simulasi typing berdasarkan kompleksitas pesan
+	h.typingSimulator.SmartTypingDelay(chatJID, message)
+	
+	// Kirim pesan setelah simulasi typing selesai
+	_, err := h.client.SendMessage(context.Background(), chatJID, &waProto.Message{
+		Conversation: &message,
+	})
+	
+	if err != nil {
+		h.logger.Errorf("Gagal kirim pesan ke %s: %v", chatJID, err)
+		return err
+	}
+	
+	h.logger.Debugf("✅ Pesan promote terkirim dengan typing delay ke %s", chatJID)
+	return nil
 }
 
 // HandleAcaCommand menangani command .aca (dulu .promote)

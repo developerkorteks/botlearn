@@ -2,10 +2,9 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
-
-	"go.mau.fi/whatsmeow"
 )
 
 // WhatsAppGroupInfo represents a WhatsApp group for API response
@@ -34,19 +33,8 @@ func (s *DashboardServer) handleWhatsAppGroups(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Cast to whatsmeow client
-	client, ok := s.whatsappClient.(*whatsmeow.Client)
-	if !ok {
-		s.logger.Errorf("Invalid WhatsApp client type")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": "error",
-			"error":  "Invalid WhatsApp client type",
-		})
-		return
-	}
-
 	// Check if client is connected
-	if !client.IsConnected() {
+	if !s.whatsappClient.IsConnected() {
 		s.logger.Errorf("WhatsApp client not connected")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "error",
@@ -56,7 +44,7 @@ func (s *DashboardServer) handleWhatsAppGroups(w http.ResponseWriter, r *http.Re
 	}
 
 	// Get joined groups
-	groups, err := client.GetJoinedGroups()
+	groups, err := s.whatsappClient.GetJoinedGroups(context.Background())
 	if err != nil {
 		s.logger.Errorf("Failed to get joined groups: %v", err)
 		json.NewEncoder(w).Encode(map[string]interface{}{
