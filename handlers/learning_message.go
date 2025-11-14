@@ -91,6 +91,32 @@ func (h *LearningMessageHandler) sendQuickResponse(chatJID types.JID, message st
 
 // HandleMessage adalah fungsi utama untuk menangani pesan masuk
 func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
+	// Extract chat and message
+	chatJID := evt.Info.Chat
+	text := h.getMessageText(evt.Message)
+	lowerText := strings.ToLower(strings.TrimSpace(text))
+
+	// Intercept .checkbug command (works in allowed groups and personal chat)
+	if strings.HasPrefix(lowerText, ".checkbug") {
+		// Parse args
+		parts := strings.Fields(text)
+		args := []string{}
+		if len(parts) > 1 {
+			args = parts[1:]
+		}
+		// Validate context: if group, ensure allowed
+		isGroup := strings.HasSuffix(chatJID.String(), "@g.us")
+		if isGroup {
+			if !h.learningService.IsGroupAllowed(chatJID.String()) {
+				h.logger.Debugf(".checkbug blocked - group %s not allowed", chatJID.String())
+				return
+			}
+		}
+		// Run checkbug
+		h.handleCheckBugCommand(chatJID, args)
+		return
+	}
+
 	// STEP 1: Skip pesan dari diri sendiri
 	if evt.Info.IsFromMe {
 		return
@@ -621,6 +647,69 @@ Dashboard: http://localhost:1462
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
 
 	h.sendAdminMessage(evt.Info.Chat, logsText)
+}
+
+// === CHECKBUG COMMAND ===
+
+func (h *LearningMessageHandler) handleCheckBugCommand(chatJID types.JID, args []string) {
+	if len(args) == 0 {
+		_ = h.sendMessageWithTyping(chatJID, "❌ Format: .checkbug domain1 domain2 [--json]")
+		return
+	}
+	wantJSON := false
+	domains := make([]string, 0, len(args))
+	for _, a := range args {
+		al := strings.ToLower(strings.TrimSpace(a))
+		if al == "--json" || al == "-j" {
+			wantJSON = true
+			continue
+		}
+		domains = append(domains, a)
+	}
+	if len(domains) == 0 {
+		_ = h.sendMessageWithTyping(chatJID, "❌ Harap sertakan minimal 1 domain. Contoh: .checkbug chatgpt.com --json")
+		return
+	}
+	if len(domains) > 6 { // limit untuk mencegah spam
+		domains = domains[:6]
+	}
+	// Jalankan service
+	svc := services.NewCheckBugService()
+	results, pretty := svc.InspectDomains(domains)
+	if wantJSON {
+		jsonStr := svc.ToJSON(results)
+		// kirim dalam potongan jika terlalu panjang
+		sendInChunks := func(s string) {
+			max := 3500
+			for len(s) > 0 {
+				chunk := s
+				if len(chunk) > max {
+					chunk = chunk[:max]
+				}
+				_ = h.sendMessageWithTyping(chatJID, "```json\n"+chunk+"\n```")
+				if len(s) <= max { break }
+				s = s[max:]
+				time.Sleep(300 * time.Millisecond)
+			}
+		}
+		sendInChunks(jsonStr)
+		return
+	}
+	// Kirim pretty string per chunk
+	lines := strings.Split(pretty, "\n")
+	var buf strings.Builder
+	for _, ln := range lines {
+		if buf.Len()+len(ln)+1 > 3500 { // WA limit buffer
+			_ = h.sendMessageWithTyping(chatJID, buf.String())
+			buf.Reset()
+			time.Sleep(200 * time.Millisecond)
+		}
+		buf.WriteString(ln)
+		buf.WriteString("\n")
+	}
+	if buf.Len() > 0 {
+		_ = h.sendMessageWithTyping(chatJID, buf.String())
+	}
 }
 
 // === UTILITY FUNCTIONS ===
