@@ -22,6 +22,9 @@ type LearningMessageHandler struct {
 	client             *whatsmeow.Client
 	learningService    *services.LearningService
 	xrayConverterService *services.XRayConverterService
+	quotaChecker       *services.QuotaChecker
+	areaChecker        *services.AreaChecker
+	stockChecker       *services.StockChecker
 	logger             *utils.Logger
 	adminNumbers       []string // Daftar nomor admin
 	
@@ -44,6 +47,9 @@ func NewLearningMessageHandler(
 		client:             client,
 		learningService:    learningService,
 		xrayConverterService: xrayConverterService,
+		quotaChecker:       services.NewQuotaChecker(),
+		areaChecker:        services.NewAreaChecker(),
+		stockChecker:       services.NewStockChecker(),
 		logger:             logger,
 		adminNumbers:       adminNumbers,
 		commandCooldown:    make(map[string]time.Time),
@@ -114,6 +120,83 @@ func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
 		}
 		// Run checkbug
 		h.handleCheckBugCommand(chatJID, args)
+		return
+	}
+
+	// Intercept .checkkuota command (works in allowed groups only)
+	if strings.HasPrefix(lowerText, ".checkkuota") {
+		// Parse args
+		parts := strings.Fields(text)
+		if len(parts) < 2 {
+			h.sendMessageWithTyping(chatJID, "Format salah!\n\nContoh penggunaan:\n.checkkuota 081234567890\n.checkkuota 6281234567890")
+			return
+		}
+		phoneNumber := parts[1]
+		
+		// Validate context: only works in allowed groups
+		isGroup := strings.HasSuffix(chatJID.String(), "@g.us")
+		if isGroup {
+			if !h.learningService.IsGroupAllowed(chatJID.String()) {
+				h.logger.Debugf(".checkkuota blocked - group %s not allowed", chatJID.String())
+				return
+			}
+		} else {
+			// Personal chat - tidak diizinkan
+			h.logger.Debugf(".checkkuota blocked - only works in allowed groups")
+			return
+		}
+		
+		// Run checkkuota
+		h.handleCheckKuotaCommand(chatJID, phoneNumber)
+		return
+	}
+
+	// Intercept .checkarea command (works in allowed groups only)
+	if strings.HasPrefix(lowerText, ".checkarea") {
+		// Parse args
+		parts := strings.Fields(text)
+		if len(parts) < 2 {
+			h.sendMessageWithTyping(chatJID, "Format salah!\n\nContoh penggunaan:\n.checkarea demak\n.checkarea semarang\n.checkarea jakarta")
+			return
+		}
+		// Join all parts after command as area name (support multi-word)
+		areaName := strings.Join(parts[1:], " ")
+		
+		// Validate context: only works in allowed groups
+		isGroup := strings.HasSuffix(chatJID.String(), "@g.us")
+		if isGroup {
+			if !h.learningService.IsGroupAllowed(chatJID.String()) {
+				h.logger.Debugf(".checkarea blocked - group %s not allowed", chatJID.String())
+				return
+			}
+		} else {
+			// Personal chat - tidak diizinkan
+			h.logger.Debugf(".checkarea blocked - only works in allowed groups")
+			return
+		}
+		
+		// Run checkarea
+		h.handleCheckAreaCommand(chatJID, areaName)
+		return
+	}
+
+	// Intercept .checkstock command (works in allowed groups only)
+	if strings.HasPrefix(lowerText, ".checkstock") {
+		// Validate context: only works in allowed groups
+		isGroup := strings.HasSuffix(chatJID.String(), "@g.us")
+		if isGroup {
+			if !h.learningService.IsGroupAllowed(chatJID.String()) {
+				h.logger.Debugf(".checkstock blocked - group %s not allowed", chatJID.String())
+				return
+			}
+		} else {
+			// Personal chat - tidak diizinkan
+			h.logger.Debugf(".checkstock blocked - only works in allowed groups")
+			return
+		}
+		
+		// Run checkstock
+		h.handleCheckStockCommand(chatJID)
 		return
 	}
 
@@ -282,6 +365,8 @@ func (h *LearningMessageHandler) handleAdminCommand(evt *events.Message, userJID
 		h.handleLogsCommand(evt, userJID)
 	case command == ".help":
 		h.sendAdminHelp(evt.Info.Chat)
+	case command == ".info":
+		h.sendInfoMessage(evt.Info.Chat)
 	default:
 		// Try processing as learning command
 		err := h.learningService.ProcessCommand(evt.Info.Chat.String(), userJID, command)
@@ -471,49 +556,132 @@ func (h *LearningMessageHandler) getAvailableConverters() string {
 
 // sendAdminHelp mengirim bantuan untuk admin
 func (h *LearningMessageHandler) sendAdminHelp(chatJID types.JID) {
-	helpText := `🤖 **BANTUAN ADMIN BOT PEMBELAJARAN** 🤖
+	// Get dynamic XRay converters
+	converters, err := h.xrayConverterService.GetActiveConverters()
+	
+	var converterList string
+	if err != nil || len(converters) == 0 {
+		converterList = "Tidak ada converter aktif\n"
+	} else {
+		for _, conv := range converters {
+			converterList += fmt.Sprintf(".%s [link] - %s\n", conv.CommandName, conv.DisplayName)
+		}
+	}
+	
+	helpText := fmt.Sprintf(`BANTUAN BOT PEMBELAJARAN
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-           **COMMAND MANAGEMENT GRUP**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+COMMAND MANAGEMENT GRUP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-📋 **Group Management:**
-• .addgroup [JID] [Nama] - Tambah grup ke whitelist
-• .removegroup [JID] - Hapus grup dari whitelist
-• .listgroups - List semua grup yang diizinkan
+*Group Management:*
+.addgroup [JID] [Nama] - Tambah grup ke whitelist
+.removegroup [JID] - Hapus grup dari whitelist
+.listgroups - List semua grup yang diizinkan
 
-📊 **Statistics:**
-• .stats - Statistik penggunaan bot
-• .logs - Log aktivitas terakhir
+*Statistics:*
+.stats - Statistik penggunaan bot
+.logs - Log aktivitas terakhir
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-           **XRAY CONVERTER COMMANDS**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+XRAY CONVERTER COMMANDS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🔄 **Converter Commands:**
-• .convertbizz [vmess://xxx] - XL-Line-WC (Wildcard)
-• .convertinsta [vmess://xxx] - XL-Instagram-SNI 
-• .convertnetflix [vmess://xxx] - XL-Netflix-WS
-• .convertgopay [vmess://xxx] - XL-Gopay-Midtrans-WC
-• .convertgrpc [vmess://xxx] - Generic-gRPC
+*Converter Commands:*
+%s
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+UTILITY COMMANDS (Group Only)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-           **LEARNING COMMANDS**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*Check Commands:*
+.checkkuota [nomor] - Cek kuota XL/AXIS
+  Contoh: .checkkuota 087817739901
 
-📚 **Default Commands:**
-• .help - Bantuan umum
-• .info - Info tentang bot
-• .listbugs - List bug server VPN
+.checkarea [nama] - Cek area level (L1-L4)
+  Contoh: .checkarea demak
 
-💡 **Dashboard:** http://localhost:1462
-🌐 **Manage via web:** Groups, Commands, Auto Response
+.checkstock - Cek stock produk (3 API)
+  Info: BPA, XDA, XLA products
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+.checkbug [domain] - Inspect bug hosting/CDN
+  Contoh: .checkbug chatgpt.com --json
 
-**Bot siap melayani!** 🚀`
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LEARNING COMMANDS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+*Default Commands:*
+.help - Bantuan umum
+.info - Info tentang bot
+.listbugs - List bug server VPN
+
+*Dashboard:* http://localhost:1462
+*Manage via web:* Groups, Commands, Auto Response
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Bot siap melayani!`, converterList)
 
 	h.sendAdminMessage(chatJID, helpText)
+}
+
+// sendInfoMessage mengirim info tentang bot
+func (h *LearningMessageHandler) sendInfoMessage(chatJID types.JID) {
+	// Get dynamic XRay converters
+	converters, err := h.xrayConverterService.GetActiveConverters()
+	
+	var converterList string
+	if err != nil || len(converters) == 0 {
+		converterList = "- Tidak ada converter aktif\n"
+	} else {
+		for _, conv := range converters {
+			converterList += fmt.Sprintf("- .%s - %s\n", conv.CommandName, conv.DisplayName)
+		}
+	}
+	
+	infoText := fmt.Sprintf(`INFO BOT PEMBELAJARAN
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+*Nama Bot:* Bot Pembelajaran & Utility
+*Version:* 1.0.0
+*Platform:* WhatsApp (whatsmeow)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FITUR UTAMA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+*1. XRay Converter*
+Convert VMess/VLess/Trojan configs dengan bug hosting untuk XL/AXIS
+
+Available converters:
+%s
+*2. Learning System*
+Custom commands dan auto response untuk grup pembelajaran
+
+*3. Utility Commands*
+- Check Kuota XL/AXIS (.checkkuota)
+- Check Area Level (.checkarea)
+- Check Stock Produk (.checkstock)
+- Check Bug Hosting (.checkbug)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CARA PENGGUNAAN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+*Untuk User:*
+Bot hanya aktif di grup yang sudah di-whitelist oleh admin.
+Gunakan command yang tersedia sesuai kebutuhan.
+
+*Untuk Admin:*
+Gunakan .help untuk melihat semua command management.
+Dashboard: http://localhost:1462
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Ketik .help untuk list semua command`, converterList)
+
+	h.sendAdminMessage(chatJID, infoText)
 }
 
 // sendAdminMessage mengirim pesan ke admin dengan typing delay
@@ -647,6 +815,75 @@ Dashboard: http://localhost:1462
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
 
 	h.sendAdminMessage(evt.Info.Chat, logsText)
+}
+
+// === CHECKKUOTA COMMAND ===
+
+func (h *LearningMessageHandler) handleCheckKuotaCommand(chatJID types.JID, phoneNumber string) {
+	h.logger.Infof("Processing .checkkuota command for: %s", phoneNumber)
+	
+	// Send processing message
+	_ = h.sendQuickResponse(chatJID, "Sedang mengecek kuota...\n\nNomor: "+phoneNumber+"\nMohon tunggu sebentar...")
+	
+	// Check quota using service
+	result, err := h.quotaChecker.CheckQuota(phoneNumber)
+	if err != nil {
+		h.logger.Errorf("Failed to check quota: %v", err)
+		errorMsg := fmt.Sprintf("Gagal cek kuota!\n\nNomor: %s\nError: %v\n\nTips:\n- Pastikan format nomor benar (08xxx atau 628xxx)\n- Coba lagi beberapa saat", phoneNumber, err)
+		_ = h.sendMessageWithTyping(chatJID, errorMsg)
+		return
+	}
+	
+	// Send result with typing simulation
+	_ = h.sendMessageWithTyping(chatJID, result)
+	h.logger.Infof("Quota info sent successfully for: %s", phoneNumber)
+}
+
+// === CHECKAREA COMMAND ===
+
+func (h *LearningMessageHandler) handleCheckAreaCommand(chatJID types.JID, areaName string) {
+	h.logger.Infof("Processing .checkarea command for: %s", areaName)
+	
+	// Send processing message
+	_ = h.sendQuickResponse(chatJID, "Sedang mencari area...\n\nArea: "+areaName+"\nMohon tunggu sebentar...")
+	
+	// Check area using service
+	result, err := h.areaChecker.CheckArea(areaName)
+	if err != nil {
+		h.logger.Errorf("Failed to check area: %v", err)
+		errorMsg := fmt.Sprintf("Gagal cek area!\n\nArea: %s\nError: %v\n\nTips:\n- Coba nama area lain\n- Contoh: demak, semarang, jakarta", areaName, err)
+		_ = h.sendMessageWithTyping(chatJID, errorMsg)
+		return
+	}
+	
+	// Send result with typing simulation
+	_ = h.sendMessageWithTyping(chatJID, result)
+	h.logger.Infof("Area info sent successfully for: %s", areaName)
+}
+
+// === CHECKSTOCK COMMAND ===
+
+func (h *LearningMessageHandler) handleCheckStockCommand(chatJID types.JID) {
+	h.logger.Infof("Processing .checkstock command")
+	
+	// Send processing message
+	_ = h.sendQuickResponse(chatJID, "Sedang mengecek stock dari 3 API...\n\nMohon tunggu sebentar...")
+	
+	// Check stock using service (concurrent API calls)
+	result, err := h.stockChecker.CheckStock()
+	if err != nil {
+		h.logger.Errorf("Failed to check stock: %v", err)
+		errorMsg := fmt.Sprintf("Gagal cek stock!\n\nError: %v\n\nTips:\n- Coba lagi beberapa saat\n- API mungkin sedang maintenance", err)
+		_ = h.sendMessageWithTyping(chatJID, errorMsg)
+		return
+	}
+	
+	// Format response
+	formattedResult := h.stockChecker.FormatStockResponse(result)
+	
+	// Send result with typing simulation
+	_ = h.sendMessageWithTyping(chatJID, formattedResult)
+	h.logger.Infof("Stock info sent successfully")
 }
 
 // === CHECKBUG COMMAND ===

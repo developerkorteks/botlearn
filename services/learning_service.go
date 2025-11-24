@@ -20,9 +20,10 @@ import (
 
 // LearningService mengelola sistem pembelajaran bot
 type LearningService struct {
-	client     *whatsmeow.Client
-	repository database.Repository
-	logger     *utils.Logger
+	client               *whatsmeow.Client
+	repository           database.Repository
+	logger               *utils.Logger
+	xrayConverterService *XRayConverterService
 
 	// Cooldown map untuk mencegah spam auto response
 	// key: "groupJID:keyword", value: last response time
@@ -30,12 +31,13 @@ type LearningService struct {
 }
 
 // NewLearningService membuat service baru untuk learning bot
-func NewLearningService(client *whatsmeow.Client, repo database.Repository, logger *utils.Logger) *LearningService {
+func NewLearningService(client *whatsmeow.Client, repo database.Repository, logger *utils.Logger, xrayService *XRayConverterService) *LearningService {
 	return &LearningService{
-		client:           client,
-		repository:       repo,
-		logger:           logger,
-		responseCooldown: make(map[string]time.Time),
+		client:               client,
+		repository:           repo,
+		logger:               logger,
+		xrayConverterService: xrayService,
+		responseCooldown:     make(map[string]time.Time),
 	}
 }
 
@@ -687,17 +689,38 @@ func (s *LearningService) GenerateDynamicHelp() (string, error) {
 	}
 
 	if len(activeCommands) == 0 {
-		return `📚 *BANTUAN BOT PEMBELAJARAN* 📚
+		// Get XRay converters
+		var converterList string
+		if s.xrayConverterService != nil {
+			converters, err := s.xrayConverterService.GetActiveConverters()
+			if err == nil && len(converters) > 0 {
+				converterList = "\n*XRAY CONVERTER:*\n"
+				for _, conv := range converters {
+					converterList += fmt.Sprintf(".%s [link] - %s\n", conv.CommandName, conv.DisplayName)
+				}
+				converterList += "\n"
+			}
+		}
+		
+		return fmt.Sprintf(`BANTUAN BOT PEMBELAJARAN
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+           COMMAND TERSEDIA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+%s*UTILITY COMMANDS:*
+.checkkuota [nomor] - Cek kuota XL/AXIS
+.checkarea [nama] - Cek area level (L1-L4)
+.checkstock - Cek stock produk (3 API)
+.checkbug [domain] - Inspect bug hosting/CDN
+
+*INFORMASI:*
+.help - Menampilkan daftar command
+.info - Informasi tentang bot
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-ℹ️ Belum ada command yang tersedia.
-Admin dapat menambahkan command melalui dashboard.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🎯 *Bot ini untuk pembelajaran saja*
-🚫 *Gunakan dengan bijak*`, nil
+Bot ini untuk pembelajaran saja
+Gunakan dengan bijak`, converterList), nil
 	}
 
 	// Kelompokkan command berdasarkan kategori
@@ -706,14 +729,33 @@ Admin dapat menambahkan command melalui dashboard.
 		categories[cmd.Category] = append(categories[cmd.Category], cmd)
 	}
 
+	// Get XRay converters
+	var converterSection string
+	if s.xrayConverterService != nil {
+		converters, err := s.xrayConverterService.GetActiveConverters()
+		if err == nil && len(converters) > 0 {
+			converterSection = "*XRAY CONVERTER:*\n"
+			for _, conv := range converters {
+				converterSection += fmt.Sprintf(".%s [link] - %s\n", conv.CommandName, conv.DisplayName)
+			}
+			converterSection += "\n"
+		}
+	}
+	
 	// Buat response dinamis
-	response := `📚 *BANTUAN BOT PEMBELAJARAN* 📚
+	response := fmt.Sprintf(`BANTUAN BOT PEMBELAJARAN
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-           *COMMAND TERSEDIA*
+           COMMAND TERSEDIA
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-`
+%s*UTILITY COMMANDS:*
+.checkkuota [nomor] - Cek kuota XL/AXIS
+.checkarea [nama] - Cek area level (L1-L4)
+.checkstock - Cek stock produk (3 API)
+.checkbug [domain] - Inspect bug hosting/CDN
+
+`, converterSection)
 
 	// Kategori dengan icon
 	categoryIcons := map[string]string{
@@ -785,10 +827,8 @@ Admin dapat menambahkan command melalui dashboard.
 
 	response += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🎯 *Bot ini untuk pembelajaran saja*
-🚫 *Gunakan dengan bijak*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Bot ini untuk pembelajaran saja
+Gunakan dengan bijak
 `
 
 	return response, nil

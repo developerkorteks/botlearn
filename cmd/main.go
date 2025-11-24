@@ -73,11 +73,11 @@ func main() {
 	}
 	defer learningDB.Close()
 	
-	// Setup learning service
-	learningService := services.NewLearningService(client, learningRepo, logger)
-	
-	// Setup XRay converter service
+	// Setup XRay converter service (create first)
 	xrayConverterService := services.NewXRayConverterService(learningRepo, logger)
+	
+	// Setup learning service (with XRay service)
+	learningService := services.NewLearningService(client, learningRepo, logger, xrayConverterService)
 	
 	// Insert default XRay converters
 	logger.Info("Setting up default XRay converters...")
