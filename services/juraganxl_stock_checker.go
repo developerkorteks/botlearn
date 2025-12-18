@@ -344,7 +344,7 @@ func (sc *JuraganXLStockChecker) FormatStockResponse(result *JuraganXLStockResul
 	var sb strings.Builder
 
 	// Header
-	sb.WriteString("CEK STOCK PRODUK JURAGANXL\n")
+	sb.WriteString("CEK STOCK PRODUK GRNSTORE\n")
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 
 	// Summary
@@ -353,11 +353,11 @@ func (sc *JuraganXLStockChecker) FormatStockResponse(result *JuraganXLStockResul
 	flexMaxReady := sc.countFlexMaxReady(result.FlexMax)
 	flexManiaCount := len(result.FlexMania.FlexManiaTable)
 
-	sb.WriteString("📊 RINGKASAN:\n")
-	sb.WriteString(fmt.Sprintf("• XDA Ready: %d / %d\n", regularReady, len(result.Regular)))
-	sb.WriteString(fmt.Sprintf("• XCLP Ready: %d / %d\n", circleReady, len(result.Circle)))
-	sb.WriteString(fmt.Sprintf("• FlexMax: %d / 2\n", flexMaxReady))
-	sb.WriteString(fmt.Sprintf("• FlexMania: %d produk\n\n", flexManiaCount))
+	sb.WriteString("RINGKASAN:\n")
+	sb.WriteString(fmt.Sprintf("- XDA Ready: %d / %d\n", regularReady, len(result.Regular)))
+	sb.WriteString(fmt.Sprintf("- XCLP Ready: %d / %d\n", circleReady, len(result.Circle)))
+	sb.WriteString(fmt.Sprintf("- FlexMax: %d / 2\n", flexMaxReady))
+	sb.WriteString(fmt.Sprintf("- FlexMania: %d produk\n\n", flexManiaCount))
 
 	// Format each section
 	sc.formatRegularStock(&sb, result.Regular)
@@ -367,12 +367,12 @@ func (sc *JuraganXLStockChecker) FormatStockResponse(result *JuraganXLStockResul
 
 	// Footer
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString("✅ Data berhasil diambil\n")
-	sb.WriteString(fmt.Sprintf("🕒 Waktu: %s\n", result.Timestamp.Format("02-01-2006 15:04:05")))
+	sb.WriteString("Data berhasil diambil\n")
+	sb.WriteString(fmt.Sprintf("Waktu: %s\n", result.Timestamp.Format("02-01-2006 15:04:05")))
 
 	// Show errors if any
 	if len(result.Errors) > 0 {
-		sb.WriteString(fmt.Sprintf("\n⚠️ Partial errors: %d\n", len(result.Errors)))
+		sb.WriteString(fmt.Sprintf("\n[!] Partial errors: %d\n", len(result.Errors)))
 	}
 
 	return sb.String()
@@ -414,7 +414,7 @@ func (sc *JuraganXLStockChecker) countFlexMaxReady(response FlexMaxResponse) int
 // formatRegularStock formats XDA regular stock
 func (sc *JuraganXLStockChecker) formatRegularStock(sb *strings.Builder, stocks []RegularStock) {
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString("📱 STOK XDA (Reguler)\n")
+	sb.WriteString("STOK XDA (Reguler)\n")
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 
 	// Separate ready and empty
@@ -429,7 +429,7 @@ func (sc *JuraganXLStockChecker) formatRegularStock(sb *strings.Builder, stocks 
 
 	// Show ready products
 	if len(ready) > 0 {
-		sb.WriteString(fmt.Sprintf("✅ READY (%d):\n", len(ready)))
+		sb.WriteString(fmt.Sprintf("READY (%d):\n", len(ready)))
 		for i, stock := range ready {
 			sb.WriteString(fmt.Sprintf("%d. %s - Stock: %d\n", i+1, stock.Config, stock.Count))
 			sb.WriteString(fmt.Sprintf("   Area1: %dGB | Area2: %dGB | Area3: %dGB | Area4: %dGB\n",
@@ -440,7 +440,7 @@ func (sc *JuraganXLStockChecker) formatRegularStock(sb *strings.Builder, stocks 
 		}
 		sb.WriteString("\n")
 	} else {
-		sb.WriteString("✅ READY: Tidak ada\n\n")
+		sb.WriteString("READY: Tidak ada\n\n")
 	}
 
 	// Show empty products (limit to first 5)
@@ -449,7 +449,7 @@ func (sc *JuraganXLStockChecker) formatRegularStock(sb *strings.Builder, stocks 
 		if len(empty) < limit {
 			limit = len(empty)
 		}
-		sb.WriteString(fmt.Sprintf("❌ EMPTY (%d, showing %d):\n", len(empty), limit))
+		sb.WriteString(fmt.Sprintf("EMPTY (%d, showing %d):\n", len(empty), limit))
 		for i := 0; i < limit; i++ {
 			stock := empty[i]
 			sb.WriteString(fmt.Sprintf("%d. %s - Stock: 0\n", i+1, stock.Config))
@@ -464,7 +464,7 @@ func (sc *JuraganXLStockChecker) formatRegularStock(sb *strings.Builder, stocks 
 // formatCircleStock formats XCLP circle stock
 func (sc *JuraganXLStockChecker) formatCircleStock(sb *strings.Builder, stocks []CircleStock) {
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString("🎯 STOK XCLP (Circle)\n")
+	sb.WriteString("STOK XCLP (Circle)\n")
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 
 	// Separate ready and empty
@@ -479,14 +479,14 @@ func (sc *JuraganXLStockChecker) formatCircleStock(sb *strings.Builder, stocks [
 
 	// Show ready products
 	if len(ready) > 0 {
-		sb.WriteString(fmt.Sprintf("✅ READY (%d):\n", len(ready)))
+		sb.WriteString(fmt.Sprintf("READY (%d):\n", len(ready)))
 		for i, stock := range ready {
 			sb.WriteString(fmt.Sprintf("%d. %s - Stock: %d | Kuota: %dGB\n",
 				i+1, stock.Config, stock.Count, stock.QuotaAllocation))
 		}
 		sb.WriteString("\n")
 	} else {
-		sb.WriteString("✅ READY: Tidak ada\n\n")
+		sb.WriteString("READY: Tidak ada\n\n")
 	}
 
 	// Show empty products (limit to first 5)
@@ -495,7 +495,7 @@ func (sc *JuraganXLStockChecker) formatCircleStock(sb *strings.Builder, stocks [
 		if len(empty) < limit {
 			limit = len(empty)
 		}
-		sb.WriteString(fmt.Sprintf("❌ EMPTY (%d, showing %d):\n", len(empty), limit))
+		sb.WriteString(fmt.Sprintf("EMPTY (%d, showing %d):\n", len(empty), limit))
 		for i := 0; i < limit; i++ {
 			stock := empty[i]
 			sb.WriteString(fmt.Sprintf("%d. %s - Kuota: %dGB\n", i+1, stock.Config, stock.QuotaAllocation))
@@ -510,7 +510,7 @@ func (sc *JuraganXLStockChecker) formatCircleStock(sb *strings.Builder, stocks [
 // formatFlexMax formats FlexMax products
 func (sc *JuraganXLStockChecker) formatFlexMax(sb *strings.Builder, response FlexMaxResponse) {
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString("🌟 FLEXMAX (Area)\n")
+	sb.WriteString("FLEXMAX (Area)\n")
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 
 	if len(response.Flexmax) == 0 {
@@ -520,9 +520,9 @@ func (sc *JuraganXLStockChecker) formatFlexMax(sb *strings.Builder, response Fle
 
 	i := 1
 	for _, item := range response.Flexmax {
-		status := "✅"
+		status := "[TERSEDIA]"
 		if strings.ToUpper(item.Status) != "TERSEDIA" {
-			status = "❌"
+			status = "[HABIS]"
 		}
 
 		sb.WriteString(fmt.Sprintf("%d. %s (%s) - %s %s\n",
@@ -543,7 +543,7 @@ func (sc *JuraganXLStockChecker) formatFlexMax(sb *strings.Builder, response Fle
 // formatFlexMania formats FlexMania products
 func (sc *JuraganXLStockChecker) formatFlexMania(sb *strings.Builder, response FlexManiaResponse) {
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	sb.WriteString("🔥 FLEXMANIA (Nasional)\n")
+	sb.WriteString("FLEXMANIA (Nasional)\n")
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 
 	if len(response.FlexManiaTable) == 0 {

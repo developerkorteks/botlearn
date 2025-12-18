@@ -866,8 +866,14 @@ func (h *LearningMessageHandler) handleCheckAreaCommand(chatJID types.JID, areaN
 func (h *LearningMessageHandler) handleCheckStockCommand(chatJID types.JID) {
 	h.logger.Infof("Processing .checkstock command")
 	
-	// Send processing message
-	_ = h.sendQuickResponse(chatJID, "Sedang mengecek stock dari JuraganXL...\n\nMohon tunggu sebentar...")
+	// Send processing message with typing
+	_ = h.sendMessageWithTyping(chatJID, "Cek Kuota Reguler GRNStore")
+	
+	// Add delay for realistic feel (1-2 seconds)
+	time.Sleep(1500 * time.Millisecond)
+	
+	// Send "please wait" message with typing
+	_ = h.sendMessageWithTyping(chatJID, "Mohon tunggu sebentar...")
 	
 	// Check stock using service (concurrent API calls to 4 endpoints)
 	result, err := h.stockChecker.CheckStock()
@@ -877,6 +883,9 @@ func (h *LearningMessageHandler) handleCheckStockCommand(chatJID types.JID) {
 		_ = h.sendMessageWithTyping(chatJID, errorMsg)
 		return
 	}
+	
+	// Add delay before sending result
+	time.Sleep(800 * time.Millisecond)
 	
 	// Format response
 	formattedResult := h.stockChecker.FormatStockResponse(result)
