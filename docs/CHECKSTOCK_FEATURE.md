@@ -2,7 +2,9 @@
 
 ## 📝 Overview
 
-Fitur **Check Stock** memungkinkan bot untuk mengecek ketersediaan produk dari **3 API berbeda secara bersamaan** (concurrent). Fitur ini menampilkan produk ready dan empty dengan detail harga dan stok, dan hanya bisa digunakan di grup yang sudah di-whitelist.
+Fitur **Check Stock** memungkinkan bot untuk mengecek ketersediaan produk dari **JuraganXL API dengan 4 endpoint secara bersamaan** (concurrent). Fitur ini menampilkan produk ready dan empty dengan detail kuota, harga, dan area, serta hanya bisa digunakan di grup yang sudah di-whitelist.
+
+> **🆕 UPDATE (Dec 2025):** Migrated from ics-store.my.id to juraganxl.my.id - Now supports 50+ products with real-time stock counts!
 
 ---
 
@@ -15,26 +17,40 @@ Fitur **Check Stock** memungkinkan bot untuk mengecek ketersediaan produk dari *
 
 ### Catatan:
 - Tidak perlu parameter tambahan
-- Akan mengecek 3 API sekaligus (concurrent)
-- Response time: 5-10 detik (tergantung API)
+- Akan mengecek 4 API sekaligus (concurrent)
+- Response time: 2-5 detik (with CSRF token)
+- Requires authentication via CSRF token
 
 ---
 
 ## 📊 Sumber Data
 
-### 3 API yang Dicek:
+### 4 API JuraganXL yang Dicek:
 
-1. **BPA** - Daftar Produk Harian
-   - URL: `https://ics-store.my.id/api.php?action=fetchProducts&type=bpa`
-   - Provider: FMAX, KUBER, KUBERV2
+1. **XDA (Reguler)** - 16 Produk
+   - URL: `https://juraganxl.my.id/api/regulers`
+   - Products: XDA13, XDA19, XDA25, XDA27, XDA31, XDA38, XDA44, XDA50, XDA56, XDA63, XDA69, XDA75, XDA82, XDA88, XDA94, XDA100
+   - Features: Quota per area (Area1-4), Real-time stock count
 
-2. **XDA** - Daftar Produk BulananV2
-   - URL: `https://ics-store.my.id/api.php?action=fetchProducts&type=xda`
-   - Provider: FMAX, KUBER, KUBERV2
+2. **XCLP (Circle)** - 25 Produk
+   - URL: `https://juraganxl.my.id/api/stocks-circle`
+   - Products: XCLP5 - XCLP125
+   - Features: Real-time stock count, Simple quota allocation
 
-3. **XLA** - Daftar Produk Bulanan
-   - URL: `https://ics-store.my.id/api.php?action=fetchProducts&type=xla`
-   - Provider: FMAX, KUBER, KUBERV2
+3. **FlexMax (Area)** - 2 Produk
+   - URL: `https://juraganxl.my.id/api/flexmax`
+   - Products: FM75 (Rp 85.900), FM234 (Rp 149.600)
+   - Features: Price, Status (TERSEDIA/HABIS), Area-based descriptions, Bonus info
+
+4. **FlexMania (Nasional)** - 7 Produk
+   - URL: `https://juraganxl.my.id/api/flexmax-table`
+   - Products: FM6, FM10, FM15, FM20, FM25, FM32, FM36
+   - Features: National quota, Bonus details
+
+### Authentication:
+- **CSRF Token Required:** All requests need CSRF token from `/api/csrf-token`
+- Token is stored in cookies and injected to `X-CSRF-Token` header
+- Automatic token refresh on every CheckStock call
 
 ---
 
@@ -57,26 +73,53 @@ Bot akan mengirimkan informasi stock dengan format minimalis:
 
 ### Format Response:
 ```
-CEK STOCK PRODUK
+CEK STOCK PRODUK JURAGANXL
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Total Produk Ready: 0
-Total Produk Empty: 6
+📊 RINGKASAN:
+• XDA Ready: 0 / 16
+• XCLP Ready: 4 / 25
+• FlexMax: 2 / 2
+• FlexMania: 7 produk
 
-*Daftar Produk Harian*
-Type: BPA
-Provider: FMAX, KUBER, KUBERV2
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📱 STOK XDA (Reguler)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-READY: Tidak ada produk ready
+✅ READY: Tidak ada
 
-EMPTY: Tidak ada produk
+❌ EMPTY (16, showing 5):
+1. XDA13 - Stock: 0
+2. XDA19 - Stock: 0
+...
 
-
-*Daftar Produk Bulanan*
-Type: XLA
-Provider: FMAX, KUBER, KUBERV2
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 STOK XCLP (Circle)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ READY (4):
+1. XCLP5 - Stock: 239 | Kuota: 5GB
+2. XCLP10 - Stock: 191 | Kuota: 10GB
+3. XCLP15 - Stock: 68 | Kuota: 15GB
+4. XCLP20 - Stock: 15 | Kuota: 20GB
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌟 FLEXMAX (Area)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Flex Max XL (FM75) - Rp 85.900 ✅
+   Area1: 75GB Nasional
+   Area2: 75GB Nasional + 6GB Lokal
+   Area3: 75GB Nasional + 9GB Lokal
+   Area4: 75GB Nasional + 15GB Lokal
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔥 FLEXMANIA (Nasional)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Flex Mania 6Gb - 6Gb Nasional
+2. Flex Mania 10Gb - 10Gb Nasional
+...
 
 READY: Tidak ada produk ready
 
@@ -483,6 +526,8 @@ Jika ada pertanyaan atau issues:
 ---
 
 **Created:** 2025-11-24  
-**Version:** 1.0.0  
+**Updated:** 2025-12-19  
+**Version:** 2.0.0  
 **Status:** ✅ Production Ready  
-**APIs:** 3 concurrent (BPA, XDA, XLA)
+**APIs:** 4 concurrent (XDA, XCLP, FlexMax, FlexMania)  
+**Source:** JuraganXL API (juraganxl.my.id)

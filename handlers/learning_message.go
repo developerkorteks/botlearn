@@ -24,7 +24,7 @@ type LearningMessageHandler struct {
 	xrayConverterService *services.XRayConverterService
 	quotaChecker       *services.QuotaChecker
 	areaChecker        *services.AreaChecker
-	stockChecker       *services.StockChecker
+	stockChecker       *services.JuraganXLStockChecker
 	logger             *utils.Logger
 	adminNumbers       []string // Daftar nomor admin
 	
@@ -49,7 +49,7 @@ func NewLearningMessageHandler(
 		xrayConverterService: xrayConverterService,
 		quotaChecker:       services.NewQuotaChecker(),
 		areaChecker:        services.NewAreaChecker(),
-		stockChecker:       services.NewStockChecker(),
+		stockChecker:       services.NewJuraganXLStockChecker(),
 		logger:             logger,
 		adminNumbers:       adminNumbers,
 		commandCooldown:    make(map[string]time.Time),
@@ -600,8 +600,8 @@ UTILITY COMMANDS (Group Only)
 .checkarea [nama] - Cek area level (L1-L4)
   Contoh: .checkarea demak
 
-.checkstock - Cek stock produk (3 API)
-  Info: BPA, XDA, XLA products
+.checkstock - Cek stock produk JuraganXL
+  Info: XDA, XCLP, FlexMax, FlexMania
 
 .checkbug [domain] - Inspect bug hosting/CDN
   Contoh: .checkbug chatgpt.com --json
@@ -662,7 +662,7 @@ Custom commands dan auto response untuk grup pembelajaran
 *3. Utility Commands*
 - Check Kuota XL/AXIS (.checkkuota)
 - Check Area Level (.checkarea)
-- Check Stock Produk (.checkstock)
+- Check Stock JuraganXL (.checkstock)
 - Check Bug Hosting (.checkbug)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -867,13 +867,13 @@ func (h *LearningMessageHandler) handleCheckStockCommand(chatJID types.JID) {
 	h.logger.Infof("Processing .checkstock command")
 	
 	// Send processing message
-	_ = h.sendQuickResponse(chatJID, "Sedang mengecek stock dari 3 API...\n\nMohon tunggu sebentar...")
+	_ = h.sendQuickResponse(chatJID, "Sedang mengecek stock dari JuraganXL...\n\nMohon tunggu sebentar...")
 	
-	// Check stock using service (concurrent API calls)
+	// Check stock using service (concurrent API calls to 4 endpoints)
 	result, err := h.stockChecker.CheckStock()
 	if err != nil {
 		h.logger.Errorf("Failed to check stock: %v", err)
-		errorMsg := fmt.Sprintf("Gagal cek stock!\n\nError: %v\n\nTips:\n- Coba lagi beberapa saat\n- API mungkin sedang maintenance", err)
+		errorMsg := fmt.Sprintf("Gagal cek stock!\n\nError: %v\n\nTips:\n- Coba lagi beberapa saat\n- API mungkin sedang maintenance\n- CSRF token mungkin expired", err)
 		_ = h.sendMessageWithTyping(chatJID, errorMsg)
 		return
 	}
