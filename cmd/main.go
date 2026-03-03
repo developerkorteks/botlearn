@@ -141,7 +141,7 @@ func main() {
 	portStr := os.Getenv("PORT")
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port == 0 {
-		port = 1462 // Default port
+		port = 42981 // Default port
 	}
 
 	go func() {
