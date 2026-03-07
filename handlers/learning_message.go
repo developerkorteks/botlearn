@@ -19,20 +19,20 @@ import (
 
 // LearningMessageHandler menangani pesan untuk bot pembelajaran
 type LearningMessageHandler struct {
-	client             *whatsmeow.Client
-	learningService    *services.LearningService
+	client               *whatsmeow.Client
+	learningService      *services.LearningService
 	xrayConverterService *services.XRayConverterService
-	quotaChecker       *services.QuotaChecker
-	areaChecker        *services.AreaChecker
-	stockChecker       *services.JuraganXLStockChecker
-	logger             *utils.Logger
-	adminNumbers       []string // Daftar nomor admin
-	
+	quotaChecker         *services.QuotaChecker
+	areaChecker          *services.AreaChecker
+	stockChecker         *services.JuraganXLStockChecker
+	logger               *utils.Logger
+	adminNumbers         []string // Daftar nomor admin
+
 	// Rate limiting: map[userJID]lastCommandTime
-	commandCooldown    map[string]time.Time
-	
+	commandCooldown map[string]time.Time
+
 	// Typing simulator untuk human-like responses
-	typingSimulator    *utils.TypingSimulator
+	typingSimulator *utils.TypingSimulator
 }
 
 // NewLearningMessageHandler membuat handler baru untuk learning bot
@@ -44,16 +44,31 @@ func NewLearningMessageHandler(
 	adminNumbers []string,
 ) *LearningMessageHandler {
 	return &LearningMessageHandler{
-		client:             client,
-		learningService:    learningService,
+		client:               client,
+		learningService:      learningService,
 		xrayConverterService: xrayConverterService,
-		quotaChecker:       services.NewQuotaChecker(),
-		areaChecker:        services.NewAreaChecker(),
-		stockChecker:       services.NewJuraganXLStockChecker(),
-		logger:             logger,
-		adminNumbers:       adminNumbers,
-		commandCooldown:    make(map[string]time.Time),
-		typingSimulator:    utils.NewTypingSimulator(client, logger),
+		quotaChecker:         services.NewQuotaChecker(),
+		areaChecker:          services.NewAreaChecker(),
+		stockChecker:         services.NewJuraganXLStockChecker(),
+		logger:               logger,
+		adminNumbers:         adminNumbers,
+		commandCooldown:      make(map[string]time.Time),
+		typingSimulator:      utils.NewTypingSimulator(client, logger),
+	}
+}
+
+// SetWhatsAppClient updates the running client dynamically
+func (h *LearningMessageHandler) SetWhatsAppClient(client *whatsmeow.Client) {
+	h.client = client
+}
+
+// SetRepository updates the internal services with the new dynamic repository
+func (h *LearningMessageHandler) SetRepository(repo database.Repository) {
+	if h.learningService != nil {
+		h.learningService.SetRepository(repo)
+	}
+	if h.xrayConverterService != nil {
+		h.xrayConverterService.SetRepository(repo)
 	}
 }
 
@@ -61,17 +76,17 @@ func NewLearningMessageHandler(
 func (h *LearningMessageHandler) sendMessageWithTyping(chatJID types.JID, message string) error {
 	// Simulasi typing berdasarkan kompleksitas pesan
 	h.typingSimulator.SmartTypingDelay(chatJID, message)
-	
+
 	// Kirim pesan setelah simulasi typing selesai
 	_, err := h.client.SendMessage(context.Background(), chatJID, &waProto.Message{
 		Conversation: &message,
 	})
-	
+
 	if err != nil {
 		h.logger.Errorf("Gagal kirim pesan ke %s: %v", chatJID, err)
 		return err
 	}
-	
+
 	h.logger.Debugf("✅ Pesan learning terkirim dengan typing delay ke %s", chatJID)
 	return nil
 }
@@ -80,17 +95,17 @@ func (h *LearningMessageHandler) sendMessageWithTyping(chatJID types.JID, messag
 func (h *LearningMessageHandler) sendQuickResponse(chatJID types.JID, message string) error {
 	// Quick delay untuk response singkat
 	h.typingSimulator.QuickDelay(chatJID)
-	
+
 	// Kirim pesan
 	_, err := h.client.SendMessage(context.Background(), chatJID, &waProto.Message{
 		Conversation: &message,
 	})
-	
+
 	if err != nil {
 		h.logger.Errorf("Gagal kirim quick response ke %s: %v", chatJID, err)
 		return err
 	}
-	
+
 	h.logger.Debugf("⚡ Quick response terkirim ke %s", chatJID)
 	return nil
 }
@@ -132,7 +147,7 @@ func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
 			return
 		}
 		phoneNumber := parts[1]
-		
+
 		// Validate context: only works in allowed groups
 		isGroup := strings.HasSuffix(chatJID.String(), "@g.us")
 		if isGroup {
@@ -145,7 +160,7 @@ func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
 			h.logger.Debugf(".checkkuota blocked - only works in allowed groups")
 			return
 		}
-		
+
 		// Run checkkuota
 		h.handleCheckKuotaCommand(chatJID, phoneNumber)
 		return
@@ -161,7 +176,7 @@ func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
 		}
 		// Join all parts after command as area name (support multi-word)
 		areaName := strings.Join(parts[1:], " ")
-		
+
 		// Validate context: only works in allowed groups
 		isGroup := strings.HasSuffix(chatJID.String(), "@g.us")
 		if isGroup {
@@ -174,7 +189,7 @@ func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
 			h.logger.Debugf(".checkarea blocked - only works in allowed groups")
 			return
 		}
-		
+
 		// Run checkarea
 		h.handleCheckAreaCommand(chatJID, areaName)
 		return
@@ -194,7 +209,7 @@ func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
 			h.logger.Debugf(".checkstock blocked - only works in allowed groups")
 			return
 		}
-		
+
 		// Run checkstock
 		h.handleCheckStockCommand(chatJID)
 		return
@@ -289,17 +304,17 @@ func (h *LearningMessageHandler) handleLearningCommand(groupJID, userJID, comman
 	// Rate limiting: 1 command per 3 seconds per user
 	cooldownKey := fmt.Sprintf("%s:%s", userJID, groupJID)
 	now := time.Now()
-	
+
 	if lastTime, exists := h.commandCooldown[cooldownKey]; exists {
 		if now.Sub(lastTime) < 3*time.Second {
 			h.logger.Debugf("🕒 Rate limit: User %s in cooldown, ignoring command: %s", userJID, command)
 			return
 		}
 	}
-	
+
 	// Update cooldown time
 	h.commandCooldown[cooldownKey] = now
-	
+
 	h.logger.Infof("🔧 Processing learning command: %s | Group: %s | User: %s",
 		command, groupJID, userJID)
 
@@ -332,25 +347,25 @@ func (h *LearningMessageHandler) handleAdminCommand(evt *events.Message, userJID
 	// Rate limiting untuk admin: 1 command per 2 seconds
 	cooldownKey := fmt.Sprintf("admin:%s", userJID)
 	now := time.Now()
-	
+
 	if lastTime, exists := h.commandCooldown[cooldownKey]; exists {
 		if now.Sub(lastTime) < 2*time.Second {
 			h.logger.Debugf("🕒 Admin rate limit: User %s in cooldown, ignoring command: %s", userJID, command)
 			return
 		}
 	}
-	
+
 	// Update cooldown time
 	h.commandCooldown[cooldownKey] = now
-	
+
 	h.logger.Infof("🔧 Processing admin command: %s | User: %s", command, userJID)
-	
+
 	// Cek apakah ini XRay converter command
 	if h.isXRayConverterCommand(command) {
 		h.handleXRayConverterCommand(evt.Info.Chat.String(), userJID, command)
 		return
 	}
-	
+
 	// Command untuk mengelola grup pembelajaran
 	switch {
 	case strings.HasPrefix(command, ".addgroup"):
@@ -386,27 +401,27 @@ func (h *LearningMessageHandler) isXRayConverterCommand(command string) bool {
 	if len(parts) < 2 {
 		return false
 	}
-	
+
 	commandName := parts[0]
-	
+
 	// Cek apakah command dimulai dengan .convert atau custom command yang ada di database
 	if strings.HasPrefix(commandName, ".convert") {
 		return true
 	}
-	
+
 	// Cek di database apakah ada converter dengan nama ini
 	converterName := strings.TrimPrefix(commandName, ".")
 	converter, err := h.xrayConverterService.GetAllConverters()
 	if err != nil {
 		return false
 	}
-	
+
 	for _, conv := range converter {
 		if conv.CommandName == converterName && conv.IsActive {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -418,24 +433,24 @@ func (h *LearningMessageHandler) handleXRayConverterCommand(groupJID, userJID, c
 		h.sendErrorMessage(groupJID, "❌ Format salah!\n\nContoh: .convertbizz vmess://xxx")
 		return
 	}
-	
+
 	commandName := strings.TrimPrefix(parts[0], ".")
 	xrayLink := parts[1]
-	
+
 	h.logger.Infof("🔄 Processing XRay conversion: %s | Link: %s", commandName, h.truncateString(xrayLink, 50))
-	
+
 	// Process conversion
 	result, err := h.xrayConverterService.ProcessConversion(commandName, xrayLink, userJID, groupJID)
 	if err != nil {
 		h.logger.Errorf("XRay conversion failed: %v", err)
-		
-		errorMsg := fmt.Sprintf("❌ **Conversion Failed!**\n\n🔧 **Command:** %s\n📝 **Error:** %s\n\n💡 **Tips:**\n• Pastikan link XRay valid\n• Cek format: vmess://, vless://, trojan://\n• Command tersedia: %s", 
+
+		errorMsg := fmt.Sprintf("❌ **Conversion Failed!**\n\n🔧 **Command:** %s\n📝 **Error:** %s\n\n💡 **Tips:**\n• Pastikan link XRay valid\n• Cek format: vmess://, vless://, trojan://\n• Command tersedia: %s",
 			commandName, err.Error(), h.getAvailableConverters())
-		
+
 		h.sendErrorMessage(groupJID, errorMsg)
 		return
 	}
-	
+
 	// Send success response
 	h.sendConversionResult(groupJID, result, commandName)
 }
@@ -448,7 +463,7 @@ func (h *LearningMessageHandler) sendConversionResult(groupJID string, result *d
 		h.logger.Errorf("Failed to parse group JID: %v", err)
 		return
 	}
-	
+
 	// Get converter info
 	converter, _ := h.xrayConverterService.GetAllConverters()
 	var displayName string
@@ -461,24 +476,30 @@ func (h *LearningMessageHandler) sendConversionResult(groupJID string, result *d
 	if displayName == "" {
 		displayName = strings.ToUpper(commandName)
 	}
-	
+
 	// === PESAN 1: INFO & DETAILS ===
 	var infoBuilder strings.Builder
-	
+
 	// Header dengan emoji dan info
 	infoBuilder.WriteString("✅ *Conversion Success!*\n\n")
 	infoBuilder.WriteString(fmt.Sprintf("🏷️ *Converter:* %s\n", displayName))
 	infoBuilder.WriteString(fmt.Sprintf("🔧 *Type:* %s\n", strings.ToUpper(result.ModifyType)))
-	infoBuilder.WriteString(fmt.Sprintf("📡 *Protocol:* %s | *Network:* %s | *TLS:* %s\n\n", 
-		strings.ToUpper(result.DetectedConfig.Protocol), 
+	infoBuilder.WriteString(fmt.Sprintf("📡 *Protocol:* %s | *Network:* %s | *TLS:* %s\n\n",
+		strings.ToUpper(result.DetectedConfig.Protocol),
 		strings.ToUpper(result.DetectedConfig.Network),
-		func() string { if result.DetectedConfig.TLS { return "Yes" } else { return "No" } }()))
-	
+		func() string {
+			if result.DetectedConfig.TLS {
+				return "Yes"
+			} else {
+				return "No"
+			}
+		}()))
+
 	// Modification details dengan format rapi
 	infoBuilder.WriteString("🔍 *Modification Details:*\n")
 	infoBuilder.WriteString(fmt.Sprintf("• Original Server: %s\n", result.DetectedConfig.Server))
 	infoBuilder.WriteString(fmt.Sprintf("• Bug Host: %s\n", result.BugHost))
-	
+
 	switch result.ModifyType {
 	case "wildcard":
 		infoBuilder.WriteString(fmt.Sprintf("• Modified Server: %s\n", result.ModifiedServer))
@@ -493,19 +514,19 @@ func (h *LearningMessageHandler) sendConversionResult(groupJID string, result *d
 		infoBuilder.WriteString(fmt.Sprintf("• Modified Server: %s\n", result.ModifiedServer))
 		infoBuilder.WriteString("• Host & SNI: _unchanged_\n")
 	}
-	
+
 	// YAML Configuration dengan format rapi
 	infoBuilder.WriteString("\n📁 *YAML Configuration:*\n")
 	infoBuilder.WriteString("```yaml\n")
 	infoBuilder.WriteString(result.YAMLConfig)
 	infoBuilder.WriteString("```\n\n")
-	
+
 	infoBuilder.WriteString("💡 *Usage Instructions:*\n")
 	infoBuilder.WriteString("1. Copy modified link untuk V2Ray/Xray\n")
 	infoBuilder.WriteString("2. Copy YAML config untuk Clash/OpenClash\n")
 	infoBuilder.WriteString("3. Restart aplikasi setelah config\n\n")
 	infoBuilder.WriteString("📱 _Modified link akan dikirim di pesan berikutnya untuk kemudahan copy..._")
-	
+
 	// Kirim pesan 1 dengan typing delay
 	infoText := infoBuilder.String()
 	err = h.sendMessageWithTyping(chatJID, infoText)
@@ -513,10 +534,10 @@ func (h *LearningMessageHandler) sendConversionResult(groupJID string, result *d
 		h.logger.Errorf("Failed to send conversion info: %v", err)
 		return
 	}
-	
+
 	// === PESAN 2: MODIFIED LINK ONLY ===
 	linkText := result.ModifiedLink
-	
+
 	// Kirim pesan 2 dengan typing delay
 	err = h.sendMessageWithTyping(chatJID, linkText)
 	if err != nil {
@@ -533,7 +554,7 @@ func (h *LearningMessageHandler) sendErrorMessage(groupJID, errorMsg string) {
 		h.logger.Errorf("Failed to parse group JID: %v", err)
 		return
 	}
-	
+
 	h.sendMessageWithTyping(chatJID, errorMsg)
 }
 
@@ -543,12 +564,12 @@ func (h *LearningMessageHandler) getAvailableConverters() string {
 	if err != nil || len(converters) == 0 {
 		return "Tidak ada converter aktif"
 	}
-	
+
 	var available []string
 	for _, conv := range converters {
 		available = append(available, fmt.Sprintf(".%s", conv.CommandName))
 	}
-	
+
 	return strings.Join(available, ", ")
 }
 
@@ -558,7 +579,7 @@ func (h *LearningMessageHandler) getAvailableConverters() string {
 func (h *LearningMessageHandler) sendAdminHelp(chatJID types.JID) {
 	// Get dynamic XRay converters
 	converters, err := h.xrayConverterService.GetActiveConverters()
-	
+
 	var converterList string
 	if err != nil || len(converters) == 0 {
 		converterList = "Tidak ada converter aktif\n"
@@ -567,7 +588,7 @@ func (h *LearningMessageHandler) sendAdminHelp(chatJID types.JID) {
 			converterList += fmt.Sprintf(".%s [link] - %s\n", conv.CommandName, conv.DisplayName)
 		}
 	}
-	
+
 	helpText := fmt.Sprintf(`BANTUAN BOT PEMBELAJARAN
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -629,7 +650,7 @@ Bot siap melayani!`, converterList)
 func (h *LearningMessageHandler) sendInfoMessage(chatJID types.JID) {
 	// Get dynamic XRay converters
 	converters, err := h.xrayConverterService.GetActiveConverters()
-	
+
 	var converterList string
 	if err != nil || len(converters) == 0 {
 		converterList = "- Tidak ada converter aktif\n"
@@ -638,7 +659,7 @@ func (h *LearningMessageHandler) sendInfoMessage(chatJID types.JID) {
 			converterList += fmt.Sprintf("- .%s - %s\n", conv.CommandName, conv.DisplayName)
 		}
 	}
-	
+
 	infoText := fmt.Sprintf(`INFO BOT PEMBELAJARAN
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -700,17 +721,17 @@ func (h *LearningMessageHandler) handleAddGroupCommand(evt *events.Message, user
 		h.sendAdminMessage(evt.Info.Chat, "❌ Format salah!\n\nContoh: .addgroup 120363420243864186@g.us Grup Pembelajaran")
 		return
 	}
-	
+
 	groupJID := parts[1]
 	groupName := strings.Join(parts[2:], " ")
-	
+
 	err := h.learningService.AddAllowedGroup(groupJID, groupName, userJID)
 	if err != nil {
 		h.logger.Errorf("Failed to add group: %v", err)
 		h.sendAdminMessage(evt.Info.Chat, fmt.Sprintf("❌ Gagal menambah grup: %v", err))
 		return
 	}
-	
+
 	h.sendAdminMessage(evt.Info.Chat, fmt.Sprintf("✅ Grup berhasil ditambahkan!\n\n📋 **Grup:** %s\n🆔 **JID:** %s\n\nBot sekarang aktif di grup tersebut.", groupName, groupJID))
 }
 
@@ -722,16 +743,16 @@ func (h *LearningMessageHandler) handleRemoveGroupCommand(evt *events.Message, u
 		h.sendAdminMessage(evt.Info.Chat, "❌ Format salah!\n\nContoh: .removegroup 120363420243864186@g.us")
 		return
 	}
-	
+
 	groupJID := parts[1]
-	
+
 	err := h.learningService.RemoveAllowedGroup(groupJID)
 	if err != nil {
 		h.logger.Errorf("Failed to remove group: %v", err)
 		h.sendAdminMessage(evt.Info.Chat, fmt.Sprintf("❌ Gagal menghapus grup: %v", err))
 		return
 	}
-	
+
 	h.sendAdminMessage(evt.Info.Chat, fmt.Sprintf("✅ Grup berhasil dihapus!\n\n🆔 **JID:** %s\n\nBot tidak lagi aktif di grup tersebut.", groupJID))
 }
 
@@ -743,15 +764,15 @@ func (h *LearningMessageHandler) handleListGroupsCommand(evt *events.Message, us
 		h.sendAdminMessage(evt.Info.Chat, "❌ Gagal mengambil daftar grup")
 		return
 	}
-	
+
 	if len(groups) == 0 {
 		h.sendAdminMessage(evt.Info.Chat, "📋 Belum ada grup yang diizinkan.\n\nGunakan .addgroup untuk menambah grup.")
 		return
 	}
-	
+
 	var response strings.Builder
 	response.WriteString("📋 **DAFTAR GRUP YANG DIIZINKAN**\n\n")
-	
+
 	activeCount := 0
 	for i, group := range groups {
 		status := "✅ Aktif"
@@ -760,15 +781,15 @@ func (h *LearningMessageHandler) handleListGroupsCommand(evt *events.Message, us
 		} else {
 			activeCount++
 		}
-		
+
 		response.WriteString(fmt.Sprintf("**%d. %s**\n", i+1, group.GroupName))
 		response.WriteString(fmt.Sprintf("🆔 JID: `%s`\n", group.GroupJID))
 		response.WriteString(fmt.Sprintf("📊 Status: %s\n", status))
 		response.WriteString(fmt.Sprintf("👤 Ditambah: %s\n\n", group.CreatedBy))
 	}
-	
+
 	response.WriteString(fmt.Sprintf("📊 **Total:** %d grup | **Aktif:** %d grup", len(groups), activeCount))
-	
+
 	h.sendAdminMessage(evt.Info.Chat, response.String())
 }
 
@@ -821,10 +842,10 @@ Dashboard: http://localhost:1462
 
 func (h *LearningMessageHandler) handleCheckKuotaCommand(chatJID types.JID, phoneNumber string) {
 	h.logger.Infof("Processing .checkkuota command for: %s", phoneNumber)
-	
+
 	// Send processing message
 	_ = h.sendQuickResponse(chatJID, "Sedang mengecek kuota...\n\nNomor: "+phoneNumber+"\nMohon tunggu sebentar...")
-	
+
 	// Check quota using service
 	result, err := h.quotaChecker.CheckQuota(phoneNumber)
 	if err != nil {
@@ -833,7 +854,7 @@ func (h *LearningMessageHandler) handleCheckKuotaCommand(chatJID types.JID, phon
 		_ = h.sendMessageWithTyping(chatJID, errorMsg)
 		return
 	}
-	
+
 	// Send result with typing simulation
 	_ = h.sendMessageWithTyping(chatJID, result)
 	h.logger.Infof("Quota info sent successfully for: %s", phoneNumber)
@@ -843,10 +864,10 @@ func (h *LearningMessageHandler) handleCheckKuotaCommand(chatJID types.JID, phon
 
 func (h *LearningMessageHandler) handleCheckAreaCommand(chatJID types.JID, areaName string) {
 	h.logger.Infof("Processing .checkarea command for: %s", areaName)
-	
+
 	// Send processing message
 	_ = h.sendQuickResponse(chatJID, "Sedang mencari area...\n\nArea: "+areaName+"\nMohon tunggu sebentar...")
-	
+
 	// Check area using service
 	result, err := h.areaChecker.CheckArea(areaName)
 	if err != nil {
@@ -855,7 +876,7 @@ func (h *LearningMessageHandler) handleCheckAreaCommand(chatJID types.JID, areaN
 		_ = h.sendMessageWithTyping(chatJID, errorMsg)
 		return
 	}
-	
+
 	// Send result with typing simulation
 	_ = h.sendMessageWithTyping(chatJID, result)
 	h.logger.Infof("Area info sent successfully for: %s", areaName)
@@ -865,16 +886,16 @@ func (h *LearningMessageHandler) handleCheckAreaCommand(chatJID types.JID, areaN
 
 func (h *LearningMessageHandler) handleCheckStockCommand(chatJID types.JID) {
 	h.logger.Infof("Processing .checkstock command")
-	
+
 	// Send processing message with typing
 	_ = h.sendMessageWithTyping(chatJID, "Cek Kuota Reguler GRNStore")
-	
+
 	// Add delay for realistic feel (1-2 seconds)
 	time.Sleep(1500 * time.Millisecond)
-	
+
 	// Send "please wait" message with typing
 	_ = h.sendMessageWithTyping(chatJID, "Mohon tunggu sebentar...")
-	
+
 	// Check stock using service (concurrent API calls to 4 endpoints)
 	result, err := h.stockChecker.CheckStock()
 	if err != nil {
@@ -883,13 +904,13 @@ func (h *LearningMessageHandler) handleCheckStockCommand(chatJID types.JID) {
 		_ = h.sendMessageWithTyping(chatJID, errorMsg)
 		return
 	}
-	
+
 	// Add delay before sending result
 	time.Sleep(800 * time.Millisecond)
-	
+
 	// Format response
 	formattedResult := h.stockChecker.FormatStockResponse(result)
-	
+
 	// Send result with typing simulation
 	_ = h.sendMessageWithTyping(chatJID, formattedResult)
 	h.logger.Infof("Stock info sent successfully")
@@ -933,7 +954,9 @@ func (h *LearningMessageHandler) handleCheckBugCommand(chatJID types.JID, args [
 					chunk = chunk[:max]
 				}
 				_ = h.sendMessageWithTyping(chatJID, "```json\n"+chunk+"\n```")
-				if len(s) <= max { break }
+				if len(s) <= max {
+					break
+				}
 				s = s[max:]
 				time.Sleep(300 * time.Millisecond)
 			}
@@ -965,11 +988,11 @@ func (h *LearningMessageHandler) getMessageText(message *waProto.Message) string
 	if message.Conversation != nil {
 		return *message.Conversation
 	}
-	
+
 	if message.ExtendedTextMessage != nil && message.ExtendedTextMessage.Text != nil {
 		return *message.ExtendedTextMessage.Text
 	}
-	
+
 	return ""
 }
 

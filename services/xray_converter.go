@@ -27,11 +27,16 @@ func NewXRayConverterService(repo database.Repository, logger *utils.Logger) *XR
 	}
 }
 
+// SetRepository updates the XRay converter's repository dynamically
+func (s *XRayConverterService) SetRepository(repo database.Repository) {
+	s.repository = repo
+}
+
 // DetectXRayConfig mendeteksi dan parse konfigurasi dari XRay link
 func (s *XRayConverterService) DetectXRayConfig(xrayLink string) (*database.DetectedXRayConfig, error) {
 	// Trim whitespace dan newlines
 	xrayLink = strings.TrimSpace(xrayLink)
-	
+
 	// Deteksi protocol dari prefix
 	if strings.HasPrefix(xrayLink, "vmess://") {
 		return s.parseVMESS(xrayLink)
@@ -42,7 +47,7 @@ func (s *XRayConverterService) DetectXRayConfig(xrayLink string) (*database.Dete
 	} else if strings.HasPrefix(xrayLink, "ss://") {
 		return s.parseShadowsocks(xrayLink)
 	}
-	
+
 	return nil, fmt.Errorf("unsupported protocol or invalid XRay link")
 }
 
@@ -50,13 +55,13 @@ func (s *XRayConverterService) DetectXRayConfig(xrayLink string) (*database.Dete
 func (s *XRayConverterService) parseVMESS(vmessLink string) (*database.DetectedXRayConfig, error) {
 	// Remove vmess:// prefix
 	linkData := strings.TrimPrefix(vmessLink, "vmess://")
-	
+
 	// Check if this is URL format (contains @ symbol)
 	if strings.Contains(linkData, "@") {
 		// This is URL format VMESS, parse as URL
 		return s.parseURLFormat(vmessLink, "vmess")
 	}
-	
+
 	// This is traditional JSON base64 format
 	// Decode base64
 	jsonData, err := base64.StdEncoding.DecodeString(linkData)
@@ -67,20 +72,20 @@ func (s *XRayConverterService) parseVMESS(vmessLink string) (*database.DetectedX
 			return nil, fmt.Errorf("failed to decode base64: %v", err)
 		}
 	}
-	
+
 	// Parse JSON
 	var vmessConfig map[string]interface{}
 	err = json.Unmarshal(jsonData, &vmessConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse JSON: %v", err)
 	}
-	
+
 	// Extract configuration
 	config := &database.DetectedXRayConfig{
 		Protocol:  "vmess",
 		RawConfig: vmessConfig,
 	}
-	
+
 	// Extract fields with type checking
 	if v, ok := vmessConfig["add"].(string); ok {
 		config.Server = v
@@ -120,14 +125,14 @@ func (s *XRayConverterService) parseVMESS(vmessLink string) (*database.DetectedX
 	if v, ok := vmessConfig["ps"].(string); ok {
 		config.Remarks = v
 	}
-	
+
 	// gRPC service name extraction
 	if config.Network == "grpc" {
 		if v, ok := vmessConfig["path"].(string); ok {
 			config.ServiceName = v
 		}
 	}
-	
+
 	return config, nil
 }
 
@@ -156,52 +161,52 @@ func (s *XRayConverterService) parseURLFormat(linkURL, protocol string) (*databa
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse URL: %v", err)
 	}
-	
+
 	config := &database.DetectedXRayConfig{
-		Protocol: protocol,
+		Protocol:  protocol,
 		RawConfig: make(map[string]interface{}),
 	}
-	
+
 	// Extract basic info
 	config.Server = parsedURL.Hostname()
 	config.Port, _ = strconv.Atoi(parsedURL.Port())
 	if config.Port == 0 {
 		config.Port = 443 // Default port
 	}
-	
+
 	// Extract UUID/Password from user info
 	if parsedURL.User != nil {
 		config.UUID = parsedURL.User.Username()
 	}
-	
+
 	// Extract remarks from fragment
 	config.Remarks = parsedURL.Fragment
-	
+
 	// Parse query parameters
 	queryParams := parsedURL.Query()
-	
+
 	// Network type
 	config.Network = queryParams.Get("type")
 	if config.Network == "" {
 		config.Network = "tcp" // Default
 	}
-	
+
 	// TLS settings
 	security := queryParams.Get("security")
 	config.TLS = (security == "tls")
-	
+
 	// SNI
 	config.SNI = queryParams.Get("sni")
 	if config.SNI == "" {
 		config.SNI = queryParams.Get("host")
 	}
-	
+
 	// Host
 	config.Host = queryParams.Get("host")
 	if config.Host == "" {
 		config.Host = config.Server
 	}
-	
+
 	// Path (for WebSocket)
 	config.Path = queryParams.Get("path")
 	if config.Path == "" && (config.Network == "ws" || config.Network == "httpupgrade") {
@@ -220,19 +225,19 @@ func (s *XRayConverterService) parseURLFormat(linkURL, protocol string) (*databa
 		}
 		config.Path = decodedPath
 	}
-	
+
 	// gRPC service name
 	config.ServiceName = queryParams.Get("serviceName")
 	if config.ServiceName == "" {
 		config.ServiceName = queryParams.Get("service")
 	}
-	
+
 	// KCP header type
 	config.HeaderType = queryParams.Get("headerType")
 	if config.HeaderType == "" {
 		config.HeaderType = queryParams.Get("header")
 	}
-	
+
 	// Build raw config for reconstruction
 	rawConfig := map[string]interface{}{
 		"protocol": protocol,
@@ -243,37 +248,37 @@ func (s *XRayConverterService) parseURLFormat(linkURL, protocol string) (*databa
 		"security": security,
 		"remarks":  config.Remarks,
 	}
-	
+
 	if config.TLS {
 		rawConfig["tls"] = "tls"
 		rawConfig["sni"] = config.SNI
 	}
-	
+
 	if config.Host != "" {
 		rawConfig["host"] = config.Host
 	}
-	
+
 	if config.Path != "" {
 		rawConfig["path"] = config.Path
 	}
-	
+
 	if config.ServiceName != "" {
 		rawConfig["serviceName"] = config.ServiceName
 	}
-	
+
 	if config.HeaderType != "" {
 		rawConfig["headerType"] = config.HeaderType
 	}
-	
+
 	// Add all query parameters to raw config
 	for key, values := range queryParams {
 		if len(values) > 0 {
 			rawConfig[key] = values[0]
 		}
 	}
-	
+
 	config.RawConfig = rawConfig
-	
+
 	return config, nil
 }
 
@@ -284,18 +289,18 @@ func (s *XRayConverterService) ModifyXRayConfig(detected *database.DetectedXRayC
 	for k, v := range detected.RawConfig {
 		modifiedConfig[k] = v
 	}
-	
+
 	result := &database.ModifiedXRayConfig{
 		DetectedConfig: detected,
 		ModifyType:     converter.ModifyType,
 		BugHost:        converter.BugHost,
 	}
-	
+
 	// Process templates with fallback to legacy modify types
 	result.ModifiedServer = s.processTemplate(converter.ServerTemplate, converter, detected)
 	result.ModifiedHost = s.processTemplate(converter.HostTemplate, converter, detected)
 	result.ModifiedSNI = s.processTemplate(converter.SNITemplate, converter, detected)
-	
+
 	// Fallback to legacy modify types if templates are empty
 	if converter.ServerTemplate == "" && converter.HostTemplate == "" && converter.SNITemplate == "" {
 		switch converter.ModifyType {
@@ -313,7 +318,7 @@ func (s *XRayConverterService) ModifyXRayConfig(detected *database.DetectedXRayC
 			result.ModifiedSNI = detected.SNI
 		}
 	}
-	
+
 	// Update config based on protocol and format
 	if detected.Protocol == "vmess" && isVMESSJSONFormat(detected.RawConfig) {
 		// VMESS JSON format
@@ -330,7 +335,7 @@ func (s *XRayConverterService) ModifyXRayConfig(detected *database.DetectedXRayC
 			modifiedConfig["sni"] = result.ModifiedSNI
 		}
 	}
-	
+
 	// Apply path template only for specific modify types that need it
 	// For wildcard and sni, keep original path unless specifically needed
 	if converter.PathTemplate != "" && (detected.Network == "ws" || detected.Network == "httpupgrade" || detected.Network == "h2") {
@@ -341,12 +346,12 @@ func (s *XRayConverterService) ModifyXRayConfig(detected *database.DetectedXRayC
 		}
 		// For wildcard and sni, path stays original (already in modifiedConfig)
 	}
-	
+
 	// Apply port override if provided
 	if converter.PortOverride != nil {
 		modifiedConfig["port"] = strconv.Itoa(*converter.PortOverride)
 	}
-	
+
 	// Generate new link based on protocol and format
 	switch detected.Protocol {
 	case "vmess":
@@ -374,14 +379,14 @@ func (s *XRayConverterService) ModifyXRayConfig(detected *database.DetectedXRayC
 	default:
 		return nil, fmt.Errorf("link generation for %s not implemented yet", detected.Protocol)
 	}
-	
+
 	// Generate YAML config
 	yamlConfig, err := s.generateYAMLConfig(detected, modifiedConfig, converter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate YAML config: %v", err)
 	}
 	result.YAMLConfig = yamlConfig
-	
+
 	return result, nil
 }
 
@@ -392,10 +397,10 @@ func (s *XRayConverterService) generateVMESSLink(config map[string]interface{}) 
 	if err != nil {
 		return "", err
 	}
-	
+
 	// Encode to base64
 	base64Data := base64.StdEncoding.EncodeToString(jsonData)
-	
+
 	return "vmess://" + base64Data, nil
 }
 
@@ -406,27 +411,27 @@ func (s *XRayConverterService) generateURLFormatLink(config map[string]interface
 	port := getString(config, "port")
 	uuid := getString(config, "uuid")
 	remarks := getString(config, "remarks")
-	
+
 	if server == "" || port == "" || uuid == "" {
 		return "", fmt.Errorf("missing required fields for %s link", protocol)
 	}
-	
+
 	// Build URL
 	linkURL := fmt.Sprintf("%s://%s@%s:%s", protocol, uuid, server, port)
-	
+
 	// Build query parameters
 	params := url.Values{}
-	
+
 	// Add network type
 	if network := getString(config, "network"); network != "" && network != "tcp" {
 		params.Set("type", network)
 	}
-	
+
 	// Add security
 	if security := getString(config, "security"); security != "" {
 		params.Set("security", security)
 	}
-	
+
 	// Add TLS-related parameters
 	if getBool(config, "tls") || getString(config, "security") == "tls" {
 		params.Set("security", "tls")
@@ -434,40 +439,40 @@ func (s *XRayConverterService) generateURLFormatLink(config map[string]interface
 			params.Set("sni", sni)
 		}
 	}
-	
+
 	// Add host
 	if host := getString(config, "host"); host != "" && host != server {
 		params.Set("host", host)
 	}
-	
+
 	// Add path (for WebSocket/HTTPUpgrade) - smart encoding
 	if path := getString(config, "path"); path != "" {
 		// Always use the decoded path and let URL encoding handle it properly
 		params.Set("path", path)
 	}
-	
+
 	// Add service name (for gRPC)
 	if serviceName := getString(config, "serviceName"); serviceName != "" {
 		params.Set("serviceName", serviceName)
 	}
-	
+
 	// Add other parameters from original config
 	for key, value := range config {
 		keyStr := fmt.Sprintf("%v", key)
 		valueStr := fmt.Sprintf("%v", value)
-		
+
 		// Skip already handled parameters
 		switch keyStr {
 		case "protocol", "server", "port", "uuid", "remarks", "network", "security", "tls", "sni", "host", "path", "serviceName":
 			continue
 		}
-		
+
 		// Add other parameters
 		if valueStr != "" && valueStr != "0" && valueStr != "false" {
 			params.Set(keyStr, valueStr)
 		}
 	}
-	
+
 	// Add query parameters to URL manually to avoid double encoding
 	if len(params) > 0 {
 		queryParts := make([]string, 0, len(params))
@@ -483,12 +488,12 @@ func (s *XRayConverterService) generateURLFormatLink(config map[string]interface
 		}
 		linkURL += "?" + strings.Join(queryParts, "&")
 	}
-	
+
 	// Add remarks as fragment
 	if remarks != "" {
 		linkURL += "#" + url.QueryEscape(remarks)
 	}
-	
+
 	return linkURL, nil
 }
 
@@ -517,24 +522,24 @@ func (s *XRayConverterService) processTemplate(template string, converter *datab
 	if template == "" {
 		return ""
 	}
-	
+
 	// For now, bug_ip same as bug_host (DNS resolution can be added later)
 	bugIP := converter.BugHost
-	
+
 	// Available placeholders:
 	// {bug_host} - Bug host domain
 	// {bug_ip} - Bug host IP (same as domain for now, can be enhanced)
 	// {original_server} - Original server from XRay link
 	// {original_host} - Original host from XRay link
 	// {original_sni} - Original SNI from XRay link
-	
+
 	result := template
 	result = strings.ReplaceAll(result, "{bug_host}", converter.BugHost)
 	result = strings.ReplaceAll(result, "{bug_ip}", bugIP)
 	result = strings.ReplaceAll(result, "{original_server}", detected.Server)
 	result = strings.ReplaceAll(result, "{original_host}", detected.Host)
 	result = strings.ReplaceAll(result, "{original_sni}", detected.SNI)
-	
+
 	return result
 }
 
@@ -547,28 +552,28 @@ func isVMESSJSONFormat(config map[string]interface{}) bool {
 // generateYAMLConfig generate YAML config untuk Clash/OpenClash
 func (s *XRayConverterService) generateYAMLConfig(detected *database.DetectedXRayConfig, modifiedConfig map[string]interface{}, converter *database.XRayConverter) (string, error) {
 	var yamlBuilder strings.Builder
-	
+
 	// Proxy name
 	proxyName := fmt.Sprintf("%s-%s-%d", converter.DisplayName, detected.Protocol, detected.Port)
-	
+
 	yamlBuilder.WriteString("proxies:\n")
 	yamlBuilder.WriteString(fmt.Sprintf("  - name: \"%s\"\n", proxyName))
 	yamlBuilder.WriteString(fmt.Sprintf("    type: %s\n", detected.Protocol))
 	yamlBuilder.WriteString("    udp: true\n")
-	
+
 	// Server and port
 	if server, ok := modifiedConfig["add"].(string); ok {
 		yamlBuilder.WriteString(fmt.Sprintf("    server: %s\n", server))
 	} else if server, ok := modifiedConfig["server"].(string); ok {
 		yamlBuilder.WriteString(fmt.Sprintf("    server: %s\n", server))
 	}
-	
+
 	port := detected.Port
 	if converter.PortOverride != nil {
 		port = *converter.PortOverride
 	}
 	yamlBuilder.WriteString(fmt.Sprintf("    port: %d\n", port))
-	
+
 	// Protocol specific configs
 	switch detected.Protocol {
 	case "vmess":
@@ -593,10 +598,10 @@ func (s *XRayConverterService) generateYAMLConfig(detected *database.DetectedXRa
 			yamlBuilder.WriteString(fmt.Sprintf("    cipher: %s\n", cipher))
 		}
 	}
-	
+
 	// Network config
 	yamlBuilder.WriteString(fmt.Sprintf("    network: %s\n", detected.Network))
-	
+
 	// TLS config
 	if detected.TLS {
 		yamlBuilder.WriteString("    tls: true\n")
@@ -607,7 +612,7 @@ func (s *XRayConverterService) generateYAMLConfig(detected *database.DetectedXRa
 	} else {
 		yamlBuilder.WriteString("    tls: false\n")
 	}
-	
+
 	// Network specific options
 	switch detected.Network {
 	case "ws":
@@ -619,7 +624,7 @@ func (s *XRayConverterService) generateYAMLConfig(detected *database.DetectedXRa
 			yamlBuilder.WriteString("      headers:\n")
 			yamlBuilder.WriteString(fmt.Sprintf("        Host: %s\n", host))
 		}
-		
+
 	case "grpc":
 		yamlBuilder.WriteString("    grpc-opts:\n")
 		serviceName := "grpc-service"
@@ -627,7 +632,7 @@ func (s *XRayConverterService) generateYAMLConfig(detected *database.DetectedXRa
 			serviceName = path
 		}
 		yamlBuilder.WriteString(fmt.Sprintf("      grpc-service-name: \"%s\"\n", serviceName))
-		
+
 	case "httpupgrade":
 		yamlBuilder.WriteString("    httpupgrade-opts:\n")
 		if path, ok := modifiedConfig["path"].(string); ok && path != "" {
@@ -638,7 +643,7 @@ func (s *XRayConverterService) generateYAMLConfig(detected *database.DetectedXRa
 			yamlBuilder.WriteString(fmt.Sprintf("        Host: %s\n", host))
 		}
 	}
-	
+
 	return yamlBuilder.String(), nil
 }
 
@@ -649,15 +654,15 @@ func (s *XRayConverterService) ProcessConversion(converterName, xrayLink, userJI
 	if err != nil {
 		return nil, fmt.Errorf("failed to get converter: %v", err)
 	}
-	
+
 	if converter == nil {
 		return nil, fmt.Errorf("converter not found: %s", converterName)
 	}
-	
+
 	if !converter.IsActive {
 		return nil, fmt.Errorf("converter is inactive: %s", converterName)
 	}
-	
+
 	// Detect XRay config
 	detected, err := s.DetectXRayConfig(xrayLink)
 	if err != nil {
@@ -675,10 +680,10 @@ func (s *XRayConverterService) ProcessConversion(converterName, xrayLink, userJI
 			ErrorMessage:     &errMsg,
 		}
 		s.repository.LogXRayConversion(logEntry)
-		
+
 		return nil, fmt.Errorf("failed to detect XRay config: %v", err)
 	}
-	
+
 	// Modify config
 	result, err := s.ModifyXRayConfig(detected, converter)
 	if err != nil {
@@ -696,10 +701,10 @@ func (s *XRayConverterService) ProcessConversion(converterName, xrayLink, userJI
 			ErrorMessage:     &errMsg,
 		}
 		s.repository.LogXRayConversion(logEntry)
-		
+
 		return nil, fmt.Errorf("failed to modify XRay config: %v", err)
 	}
-	
+
 	// Log successful conversion
 	logEntry := &database.XRayConversionLog{
 		ConverterName:    converterName,
@@ -712,12 +717,12 @@ func (s *XRayConverterService) ProcessConversion(converterName, xrayLink, userJI
 		Success:          true,
 	}
 	s.repository.LogXRayConversion(logEntry)
-	
+
 	// Increment usage count
 	s.repository.IncrementConverterUsage(converterName)
-	
+
 	s.logger.Infof("XRay conversion successful: %s -> %s (%s)", detected.Server, result.ModifiedServer, converter.ModifyType)
-	
+
 	return result, nil
 }
 

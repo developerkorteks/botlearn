@@ -41,6 +41,16 @@ func NewLearningService(client *whatsmeow.Client, repo database.Repository, logg
 	}
 }
 
+// SetRepository updates the learning service's repository dynamically
+func (s *LearningService) SetRepository(repo database.Repository) {
+	s.repository = repo
+}
+
+// SetWhatsAppClient updates the running client dynamically
+func (s *LearningService) SetWhatsAppClient(client *whatsmeow.Client) {
+	s.client = client
+}
+
 // === GROUP ACCESS CONTROL ===
 
 // IsGroupAllowed mengecek apakah grup diizinkan menggunakan bot
@@ -199,7 +209,6 @@ func (s *LearningService) getMessageText(msg *waProto.Message) string {
 	// Jika bukan teks, return empty string
 	return ""
 }
-
 
 // === COMMAND PROCESSING ===
 
@@ -701,7 +710,7 @@ func (s *LearningService) GenerateDynamicHelp() (string, error) {
 				converterList += "\n"
 			}
 		}
-		
+
 		return fmt.Sprintf(`BANTUAN BOT PEMBELAJARAN
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -741,7 +750,7 @@ Gunakan dengan bijak`, converterList), nil
 			converterSection += "\n"
 		}
 	}
-	
+
 	// Buat response dinamis
 	response := fmt.Sprintf(`BANTUAN BOT PEMBELAJARAN
 

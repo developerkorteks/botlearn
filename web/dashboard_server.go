@@ -15,7 +15,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	waLog "go.mau.fi/whatsmeow/util/log"
-	
+
 	"github.com/nabilulilalbab/promote/database"
 	"github.com/nabilulilalbab/promote/utils"
 )
@@ -30,12 +30,15 @@ type DashboardServer struct {
 	waManager      *utils.WAManager  // Enhanced WhatsApp Manager
 	qrGenerator    *utils.QRCodeGenerator
 	dashboardQR    *utils.DashboardQRHandler
-	
+
 	// QR and Pairing code state
-	currentQRCode    string
+	currentQRCode      string
 	currentPairingCode string
-	qrMutex          sync.RWMutex
-	pairingMutex     sync.RWMutex
+	qrMutex            sync.RWMutex
+	pairingMutex       sync.RWMutex
+
+	// Callback functions for dynamic DB swap
+	onReloadSessionDB func() error
 }
 
 // NewDashboardServer creates a new dashboard server
@@ -71,6 +74,16 @@ func (s *DashboardServer) SetQRGenerator(qrGen *utils.QRCodeGenerator) {
 	}
 }
 
+// SetOnReloadSessionDB sets the callback function to handle WA session reload
+func (s *DashboardServer) SetOnReloadSessionDB(callback func() error) {
+	s.onReloadSessionDB = callback
+}
+
+// SetRepository updates the dashboard's repository dynamically
+func (s *DashboardServer) SetRepository(repo database.Repository) {
+	s.repository = repo
+}
+
 // StartServer starts the web dashboard server
 func (s *DashboardServer) StartServer(port int) error {
 	// Setup routes
@@ -84,7 +97,7 @@ func (s *DashboardServer) StartServer(port int) error {
 	http.HandleFunc("/api/stats", s.handleStats)
 	http.HandleFunc("/api/xray_converters", s.handleXRayConverters)
 	http.HandleFunc("/api/xray_converters/test", s.handleXRayConverterTest)
-	
+
 	// WhatsApp Pairing endpoints
 	http.HandleFunc("/api/whatsapp/status", s.handleWhatsAppStatus)
 	http.HandleFunc("/api/whatsapp/qr", s.handleQRPairing)
@@ -96,16 +109,16 @@ func (s *DashboardServer) StartServer(port int) error {
 	http.HandleFunc("/api/whatsapp/logout", s.handleLogout)
 	http.HandleFunc("/api/whatsapp/pairing-code", s.handleGetPairingCode)
 	http.HandleFunc("/api/whatsapp/full_reset", s.handleFullReset)
-	
+
 	// Static files
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static/"))))
-	
+
 	// Create media directories
 	s.createMediaDirectories()
-	
+
 	addr := fmt.Sprintf(":%d", port)
 	s.logger.Infof("Dashboard server starting on http://localhost%s", addr)
-	
+
 	return http.ListenAndServe(addr, nil)
 }
 
@@ -113,12 +126,12 @@ func (s *DashboardServer) StartServer(port int) error {
 func (s *DashboardServer) createMediaDirectories() {
 	dirs := []string{
 		"media/images",
-		"media/videos", 
+		"media/videos",
 		"media/audios",
 		"media/stickers",
 		"media/files",
 	}
-	
+
 	for _, dir := range dirs {
 		os.MkdirAll(dir, 0755)
 	}
@@ -130,7 +143,7 @@ func (s *DashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
-	
+
 	html := `<!DOCTYPE html>
 <html lang="id">
 <head>
@@ -2550,7 +2563,7 @@ func (s *DashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request
     </script>
 </body>
 </html>`
-	
+
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(html))
 }
@@ -2581,7 +2594,7 @@ func (s *DashboardServer) getGroups(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to get groups", http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(groups)
 }
@@ -2593,13 +2606,13 @@ func (s *DashboardServer) createGroup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
-	
+
 	if err := s.repository.CreateLearningGroup(&group); err != nil {
 		s.logger.Errorf("Failed to create group: %v", err)
 		http.Error(w, "Failed to create group", http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
 }
@@ -2611,13 +2624,13 @@ func (s *DashboardServer) updateGroup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
-	
+
 	if err := s.repository.UpdateLearningGroup(&group); err != nil {
 		s.logger.Errorf("Failed to update group: %v", err)
 		http.Error(w, "Failed to update group", http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
 }
@@ -2629,13 +2642,13 @@ func (s *DashboardServer) deleteGroup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Group JID required", http.StatusBadRequest)
 		return
 	}
-	
+
 	if err := s.repository.DeleteLearningGroup(groupJID); err != nil {
 		s.logger.Errorf("Failed to delete group: %v", err)
 		http.Error(w, "Failed to delete group", http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
 }
@@ -2664,7 +2677,7 @@ func (s *DashboardServer) getCommands(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to get commands", http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(commands)
 }
@@ -2676,17 +2689,17 @@ func (s *DashboardServer) createCommand(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
-	
+
 	// Set default values
 	cmd.IsActive = true
 	cmd.CreatedBy = "admin"
-	
+
 	if err := s.repository.CreateLearningCommand(&cmd); err != nil {
 		s.logger.Errorf("Failed to create command: %v", err)
 		http.Error(w, "Failed to create command", http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
 }
@@ -2698,20 +2711,20 @@ func (s *DashboardServer) updateCommand(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
-	
+
 	// Get original command to update
 	originalCommand, ok := reqData["original_command"].(string)
 	if !ok || originalCommand == "" {
 		originalCommand = reqData["command"].(string) // fallback untuk backward compatibility
 	}
-	
+
 	// Get existing command
 	existingCmd, err := s.repository.GetLearningCommand(originalCommand)
 	if err != nil || existingCmd == nil {
 		http.Error(w, "Command not found", http.StatusNotFound)
 		return
 	}
-	
+
 	// Update fields
 	if cmd, ok := reqData["command"].(string); ok {
 		existingCmd.Command = cmd
@@ -2740,7 +2753,7 @@ func (s *DashboardServer) updateCommand(w http.ResponseWriter, r *http.Request) 
 	if mediaPath, ok := reqData["media_file_path"].(string); ok {
 		existingCmd.MediaFilePath = &mediaPath
 	}
-	
+
 	// Jika command berubah, hapus yang lama dan buat yang baru
 	if originalCommand != existingCmd.Command {
 		// Delete old command
@@ -2763,7 +2776,7 @@ func (s *DashboardServer) updateCommand(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
 }
@@ -2775,13 +2788,13 @@ func (s *DashboardServer) deleteCommand(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Command required", http.StatusBadRequest)
 		return
 	}
-	
+
 	if err := s.repository.DeleteLearningCommand(command); err != nil {
 		s.logger.Errorf("Failed to delete command: %v", err)
 		http.Error(w, "Failed to delete command", http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
 }
@@ -2930,8 +2943,8 @@ func (s *DashboardServer) handleCreateXRayConverter(w http.ResponseWriter, r *ht
 	}
 
 	response := map[string]interface{}{
-		"success": true,
-		"message": "Converter created successfully",
+		"success":   true,
+		"message":   "Converter created successfully",
 		"converter": converter,
 	}
 
@@ -3012,11 +3025,11 @@ func (s *DashboardServer) handleXRayConverterTest(w http.ResponseWriter, r *http
 
 	// TODO: Implement XRay converter test logic
 	// This would use the XRayConverterService to test conversion
-	
+
 	response := map[string]interface{}{
 		"success": true,
 		"message": "Test functionality will be implemented with XRayConverterService integration",
-		"input": testRequest,
+		"input":   testRequest,
 	}
 
 	json.NewEncoder(w).Encode(response)
@@ -3033,25 +3046,25 @@ func (s *DashboardServer) handleWhatsAppStatus(w http.ResponseWriter, r *http.Re
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	
+
 	status := map[string]interface{}{
-		"connected":    false,
-		"logged_in":    false,
-		"phone_number": "",
-		"device_name":  "",
-		"last_seen":    "",
+		"connected":       false,
+		"logged_in":       false,
+		"phone_number":    "",
+		"device_name":     "",
+		"last_seen":       "",
 		"session_healthy": true,
 	}
 
 	if s.waManager != nil {
 		status["connected"] = s.waManager.IsConnected()
 		status["logged_in"] = s.waManager.IsLoggedIn()
-		
+
 		if s.whatsappClient != nil && s.whatsappClient.Store.ID != nil {
 			status["phone_number"] = s.whatsappClient.Store.ID.User
 			status["device_name"] = fmt.Sprintf("Device-%d", s.whatsappClient.Store.ID.Device)
 		}
-		
+
 		// Get manager stats
 		stats := s.waManager.GetStats()
 		status["stats"] = stats
@@ -3126,7 +3139,7 @@ func (s *DashboardServer) handleQRPairing(w http.ResponseWriter, r *http.Request
 			s.logger.Error("❌ Dashboard QR handler tidak tersedia")
 			return
 		}
-		
+
 		err := s.dashboardQR.StartDashboardQRPairing()
 		if err != nil {
 			s.logger.Errorf("❌ QR pairing gagal: %v", err)
@@ -3134,8 +3147,8 @@ func (s *DashboardServer) handleQRPairing(w http.ResponseWriter, r *http.Request
 	}()
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"message": "QR pairing dimulai, QR code akan muncul di bawah",
+		"success":  true,
+		"message":  "QR pairing dimulai, QR code akan muncul di bawah",
 		"qr_ready": false,
 	})
 }
@@ -3152,17 +3165,17 @@ func (s *DashboardServer) handleQRImage(w http.ResponseWriter, r *http.Request) 
 
 	// QUICK FIX: Check existing QR file first
 	qrPath := "data/qrcode.png"
-	
+
 	// Check if QR file exists (from terminal generation)
 	if _, err := os.Stat(qrPath); err == nil {
 		s.logger.Debug("📱 Using existing QR file for dashboard")
-		
+
 		// Read existing QR file
 		imageData, err := ioutil.ReadFile(qrPath)
 		if err == nil {
 			// Convert to base64
 			base64Image := base64.StdEncoding.EncodeToString(imageData)
-			
+
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"success":  true,
 				"qr_image": "data:image/png;base64," + base64Image,
@@ -3181,8 +3194,8 @@ func (s *DashboardServer) handleQRImage(w http.ResponseWriter, r *http.Request) 
 
 	if qrCode == "" {
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": false,
-			"message": "QR code belum tersedia, mulai pairing dulu",
+			"success":   false,
+			"message":   "QR code belum tersedia, mulai pairing dulu",
 			"qr_active": s.dashboardQR != nil && s.dashboardQR.IsActive(),
 		})
 		return
@@ -3217,8 +3230,8 @@ func (s *DashboardServer) handleQRImage(w http.ResponseWriter, r *http.Request) 
 	base64Image := base64.StdEncoding.EncodeToString(imageData)
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"qr_code": qrCode,
+		"success":  true,
+		"qr_code":  qrCode,
 		"qr_image": "data:image/png;base64," + base64Image,
 	})
 }
@@ -3263,7 +3276,7 @@ func (s *DashboardServer) handlePhonePairing(w http.ResponseWriter, r *http.Requ
 	phoneNumber := strings.ReplaceAll(request.PhoneNumber, " ", "")
 	phoneNumber = strings.ReplaceAll(phoneNumber, "-", "")
 	phoneNumber = strings.ReplaceAll(phoneNumber, "+", "")
-	
+
 	if len(phoneNumber) < 10 || len(phoneNumber) > 15 {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
@@ -3275,7 +3288,7 @@ func (s *DashboardServer) handlePhonePairing(w http.ResponseWriter, r *http.Requ
 	// Start phone pairing process
 	go func() {
 		s.logger.Infof("📱 Memulai pairing dengan nomor: %s", phoneNumber)
-		
+
 		// Request pairing code using WAManager (safe flow)
 		if s.waManager == nil {
 			s.logger.Error("WAManager tidak tersedia")
@@ -3286,21 +3299,23 @@ func (s *DashboardServer) handlePhonePairing(w http.ResponseWriter, r *http.Requ
 			s.logger.Errorf("❌ Gagal request pairing code: %v", err)
 			return
 		}
-		
+
 		s.logger.Successf("🔑 Pairing code: %s", code)
 		s.logger.Info("📋 Masukkan code ini di WhatsApp > Linked Devices > Link a Device")
-		
+
 		// Store pairing code untuk dashboard
 		s.pairingMutex.Lock()
 		s.currentPairingCode = code
 		s.pairingMutex.Unlock()
-		
+
 		s.logger.Info("✅ Pairing code tersedia di dashboard")
-		
+
 		// Refresh main client and reconnect so dashboard sees logged-in state
 		go func() {
 			defer func() { recover() }()
-			if s.waManager == nil { return }
+			if s.waManager == nil {
+				return
+			}
 			deviceStore, err := s.waManager.Container.GetFirstDevice(context.Background())
 			if err != nil {
 				s.logger.Errorf("Gagal ambil device store setelah pairing: %v", err)
@@ -3457,23 +3472,39 @@ func (s *DashboardServer) handleLogout(w http.ResponseWriter, r *http.Request) {
 		if s.whatsappClient != nil && s.whatsappClient.Store != nil {
 			_ = s.whatsappClient.Logout(context.Background())
 		}
-		// Always clear local store for full reset
-		if s.whatsappClient != nil && s.whatsappClient.Store != nil {
-			if err := s.whatsappClient.Store.Delete(context.Background()); err != nil {
-				s.logger.Errorf("❌ Failed to delete local store: %v", err)
+
+		// Backup session.db lama agar file handle dilepas secara aman dan tidak readonly
+		timestamp := time.Now().Format("20060102_150405")
+		_ = os.Rename("data/session.db", fmt.Sprintf("data/session_%s.db.old", timestamp))
+		_ = os.Remove("data/session.db-wal")
+		_ = os.Remove("data/session.db-shm")
+
+		s.logger.Success("📦 WA Session lama di-backup untuk sesi baru.")
+
+		// Reset dashboard states
+		s.pairingMutex.Lock()
+		s.currentPairingCode = ""
+		s.pairingMutex.Unlock()
+		s.qrMutex.Lock()
+		s.currentQRCode = ""
+		s.qrMutex.Unlock()
+		s.logger.Success("🔐 True logout completed - fresh state ready. Sesi db diperbarui.")
+
+		// Tunggu sedikit agar client web dapat menangkap respon JSON
+		time.Sleep(3 * time.Second)
+		s.logger.Info("🔄 Re-initializing WA Session (Hot Swap)...")
+		if s.onReloadSessionDB != nil {
+			if err := s.onReloadSessionDB(); err != nil {
+				s.logger.Errorf("❌ Failed to hot-swap session: %v", err)
 			} else {
-				s.logger.Success("🧹 Local session store deleted")
+				s.logger.Success("✅ Hot swap session completed successfully without app restart.")
 			}
 		}
-		// Reset dashboard states
-		s.pairingMutex.Lock(); s.currentPairingCode = ""; s.pairingMutex.Unlock()
-		s.qrMutex.Lock(); s.currentQRCode = ""; s.qrMutex.Unlock()
-		s.logger.Success("🔐 True logout completed - fresh state ready")
 	}()
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
-		"message": "Safe logout initiated - akan perlu QR pairing lagi",
+		"message": "Safe logout initiated - Sesi baru sedang disiapkan tanpa mematikan bot, silakan refresh halaman sebentar lagi.",
 	})
 }
 
@@ -3500,21 +3531,48 @@ func (s *DashboardServer) handleFullReset(w http.ResponseWriter, r *http.Request
 		s.whatsappClient.DisableLoginAutoReconnect = true
 		s.whatsappClient.Disconnect()
 	}
-	// Hapus file session DB dan QR file (termasuk WAL/SHM)
+	// Hapus file session DB (termasuk WAL/SHM) dan db pembelajaran
 	_ = os.Remove("data/session.db")
 	_ = os.Remove("data/session.db-wal")
 	_ = os.Remove("data/session.db-shm")
+
+	// Rename session.db yang lama ke .old supaya tidak readonly
+	timestamp := time.Now().Format("20060102_150405")
+	_ = os.Rename("data/session.db", fmt.Sprintf("data/session_%s.db.old", timestamp))
+	_ = os.Remove("data/session.db-wal")
+	_ = os.Remove("data/session.db-shm")
+
 	_ = os.Remove("data/qrcode.png")
+
 	// Pastikan folder data ada dan writable
 	_ = os.MkdirAll("data", 0o775)
+
 	// Reset in-memory states
-	s.pairingMutex.Lock(); s.currentPairingCode = ""; s.pairingMutex.Unlock()
-	s.qrMutex.Lock(); s.currentQRCode = ""; s.qrMutex.Unlock()
-	
+	s.pairingMutex.Lock()
+	s.currentPairingCode = ""
+	s.pairingMutex.Unlock()
+	s.qrMutex.Lock()
+	s.currentQRCode = ""
+	s.qrMutex.Unlock()
+
+	// Kirim response ke client sebelum proses re-init
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
-		"message": "Full reset completed. Silakan mulai pairing dari dashboard.",
+		"message": "Full reset completed. Database baru telah disiapkan tanpa mematikan bot. Silakan refresh halaman.",
 	})
+
+	// Jalankan reload Session di background agar response sempat terkirim
+	go func() {
+		time.Sleep(3 * time.Second)
+		s.logger.Info("🔄 Re-initializing WA Session akibat Full Reset (Hot Swap)...")
+		if s.onReloadSessionDB != nil {
+			if err := s.onReloadSessionDB(); err != nil {
+				s.logger.Errorf("❌ Failed to hot-swap session: %v", err)
+			} else {
+				s.logger.Success("✅ Hot swap session completed successfully without app restart.")
+			}
+		}
+	}()
 }
 
 // handleGetPairingCode mengembalikan pairing code yang tersimpan
