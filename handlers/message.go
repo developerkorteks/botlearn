@@ -11,7 +11,7 @@ import (
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
-	
+
 	"github.com/nabilulilalbab/promote/utils"
 )
 
@@ -26,10 +26,6 @@ type MessageHandler struct {
 	// autoReplyGroup menentukan apakah bot membalas chat grup
 	autoReplyGroup bool
 
-	// Auto Promote handlers
-	promoteCommandHandler *PromoteCommandHandler
-	adminCommandHandler   *AdminCommandHandler
-	
 	// Typing simulator untuk human-like responses
 	typingSimulator *utils.TypingSimulator
 	logger          *utils.Logger
@@ -47,31 +43,27 @@ func NewMessageHandler(client *whatsmeow.Client, autoReplyPersonal, autoReplyGro
 		autoReplyPersonal: autoReplyPersonal,
 		autoReplyGroup:    autoReplyGroup,
 		typingSimulator:   utils.NewTypingSimulator(client, logger),
-		logger:           logger,
+		logger:            logger,
 	}
 }
 
-// SetAutoPromoteHandlers mengatur handlers untuk auto promote
-func (h *MessageHandler) SetAutoPromoteHandlers(promoteHandler *PromoteCommandHandler, adminHandler *AdminCommandHandler) {
-	h.promoteCommandHandler = promoteHandler
-	h.adminCommandHandler = adminHandler
-}
+// SetAutoPromoteHandlers dihapus karena fitur promote dicabut
 
 // sendMessageWithTyping mengirim pesan dengan simulasi typing yang natural
 func (h *MessageHandler) sendMessageWithTyping(chatJID types.JID, message string) error {
 	// Simulasi typing berdasarkan kompleksitas pesan
 	h.typingSimulator.SmartTypingDelay(chatJID, message)
-	
+
 	// Kirim pesan setelah simulasi typing selesai
 	_, err := h.client.SendMessage(context.Background(), chatJID, &waProto.Message{
 		Conversation: &message,
 	})
-	
+
 	if err != nil {
 		h.logger.Errorf("Gagal kirim pesan ke %s: %v", chatJID, err)
 		return err
 	}
-	
+
 	h.logger.Debugf("✅ Pesan terkirim dengan typing delay ke %s", chatJID)
 	return nil
 }
@@ -80,17 +72,17 @@ func (h *MessageHandler) sendMessageWithTyping(chatJID types.JID, message string
 func (h *MessageHandler) sendQuickResponse(chatJID types.JID, message string) error {
 	// Quick delay untuk response singkat
 	h.typingSimulator.QuickDelay(chatJID)
-	
+
 	// Kirim pesan
 	_, err := h.client.SendMessage(context.Background(), chatJID, &waProto.Message{
 		Conversation: &message,
 	})
-	
+
 	if err != nil {
 		h.logger.Errorf("Gagal kirim quick response ke %s: %v", chatJID, err)
 		return err
 	}
-	
+
 	h.logger.Debugf("⚡ Quick response terkirim ke %s", chatJID)
 	return nil
 }
@@ -169,20 +161,11 @@ func (h *MessageHandler) handleGroupMessage(evt *events.Message, messageText str
 
 // handleCommand menangani command yang dimulai dengan /
 func (h *MessageHandler) handleCommand(evt *events.Message, messageText string) {
-	// Ubah ke lowercase untuk case-insensitive commands
-	lowerText := strings.ToLower(strings.TrimSpace(messageText))
-
 	var response string
 
-	// Cek apakah ini auto promote command terlebih dahulu
-	if h.isAutoPromoteCommand(lowerText) {
-		response = h.handleAutoPromoteCommand(evt, messageText)
-	} else {
-		// Tidak ada response untuk command yang tidak dikenal
-		return
-	}
-
-	// Kirim response jika ada
+	// Semua fitur promote command sudah dihapus
+	// Tidak ada response untuk command yang tidak dikenal
+	return
 	if response != "" {
 		h.sendMessageWithTyping(evt.Info.Chat, response)
 	}
@@ -353,88 +336,4 @@ func (h *MessageHandler) truncateString(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// isAutoPromoteCommand mengecek apakah pesan adalah command auto promote
-func (h *MessageHandler) isAutoPromoteCommand(messageText string) bool {
-	if h.promoteCommandHandler == nil {
-		return false
-	}
-	return h.promoteCommandHandler.IsPromoteCommand(messageText)
-}
-
-// handleAutoPromoteCommand menangani command auto promote
-func (h *MessageHandler) handleAutoPromoteCommand(evt *events.Message, messageText string) string {
-	lowerText := strings.ToLower(strings.TrimSpace(messageText))
-
-	// Cek apakah ini admin command
-	adminCommands := []string{
-		// Group Management Commands
-		".listgroups", ".enablegroup", ".enablemulti", ".disablegroup", ".groupstatus", ".testgroup",
-		// Template Management Commands
-		".addtemplate", ".edittemplate", ".deletetemplate", ".templatestats", ".promotestats", ".activegroups", ".fetchproducts", ".productstats", ".deleteall", ".deletemulti"}
-	for _, cmd := range adminCommands {
-		if strings.HasPrefix(lowerText, cmd) {
-			if h.adminCommandHandler != nil {
-				return h.adminCommandHandler.HandleAdminCommands(evt, messageText)
-			}
-			return `❌ *AKSES DITOLAK*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-			        *TIDAK ADA IZIN*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🚫 Command ini hanya bisa digunakan oleh admin.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-💡 *INFORMASI*
-• Hanya admin yang memiliki akses.
-• Hubungi admin untuk bantuan.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🔒 *Akses terbatas untuk keamanan sistem*`
-		}
-	}
-
-	// Cek apakah ini template command yang juga perlu admin access
-	templateCommands := []string{".listtemplates", ".alltemplates", ".previewtemplate", ".help"}
-	for _, cmd := range templateCommands {
-		if strings.HasPrefix(lowerText, cmd) {
-			// Semua command auto promote sekarang hanya untuk admin
-			if h.adminCommandHandler != nil {
-				// Cek apakah user adalah admin
-				if !h.isUserAdmin(evt.Info.Sender.User) {
-					return `❌ *AKSES DITOLAK*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-			        *TIDAK ADA IZIN*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🚫 Command ini hanya bisa digunakan oleh admin.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-💡 *INFORMASI*
-• Hanya admin yang memiliki akses.
-• Hubungi admin untuk bantuan.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🔒 *Akses terbatas untuk keamanan sistem*`
-				}
-				return h.promoteCommandHandler.HandlePromoteCommands(evt, messageText)
-			}
-			return "" // Tidak ada response jika handler tidak tersedia
-		}
-	}
-
-	return "" // Tidak ada response untuk command yang tidak dikenal
-}
-
-// isUserAdmin mengecek apakah user adalah admin
-func (h *MessageHandler) isUserAdmin(userNumber string) bool {
-	if h.adminCommandHandler == nil {
-		return false
-	}
-	return h.adminCommandHandler.IsUserAdmin(userNumber)
-}
+// Fungsi-fungsi isAutoPromoteCommand dan handleAutoPromoteCommand dihapus

@@ -24,7 +24,6 @@ import (
 type DashboardServer struct {
 	repository     database.Repository
 	logger         *utils.Logger
-	adminNumbers   []string
 	mediaPath      string
 	whatsappClient *whatsmeow.Client // WhatsApp client untuk akses grup
 	waManager      *utils.WAManager  // Enhanced WhatsApp Manager
@@ -42,12 +41,11 @@ type DashboardServer struct {
 }
 
 // NewDashboardServer creates a new dashboard server
-func NewDashboardServer(repo database.Repository, logger *utils.Logger, adminNumbers []string) *DashboardServer {
+func NewDashboardServer(repo database.Repository, logger *utils.Logger) *DashboardServer {
 	return &DashboardServer{
-		repository:   repo,
-		logger:       logger,
-		adminNumbers: adminNumbers,
-		mediaPath:    "media", // Default media path
+		repository: repo,
+		logger:     logger,
+		mediaPath:  "media", // Default media path
 	}
 }
 

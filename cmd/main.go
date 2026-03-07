@@ -23,7 +23,6 @@ func main() {
 	// STEP 1: Load konfigurasi
 	// Konfigurasi berisi semua pengaturan bot seperti database path, auto reply, dll
 	cfg := config.NewConfig()
-	promoteCfg := config.NewPromoteConfig()
 
 	// STEP 2: Setup logger
 	// Logger untuk menampilkan informasi dengan format yang rapi
@@ -89,10 +88,11 @@ func main() {
 	}
 
 	// Setup learning message handler
-	learningMessageHandler := handlers.NewLearningMessageHandler(client, learningService, xrayConverterService, logger, promoteCfg.AdminNumbers)
+	// Hapus promoteCfg.AdminNumbers karena sudah tidak ada bedanya pengguna promote atau tidak
+	learningMessageHandler := handlers.NewLearningMessageHandler(client, learningService, xrayConverterService, logger, []string{})
 
 	// Setup dashboard server dengan WhatsApp pairing support
-	dashboardServer := web.NewDashboardServer(learningRepo, logger, promoteCfg.AdminNumbers)
+	dashboardServer := web.NewDashboardServer(learningRepo, logger)
 	dashboardServer.SetWhatsAppClient(client)
 	dashboardServer.SetWAManager(waManager)
 	dashboardServer.SetQRGenerator(qrGen)
@@ -137,38 +137,6 @@ func main() {
 		return nil
 	})
 
-	logger.Success("Learning System initialized!")
-
-	// STEP 8: Setup Auto Promote System (jika diaktifkan)
-	var autoPromoteService *services.AutoPromoteService
-
-	if promoteCfg.EnableAutoPromote {
-		logger.Info("Initializing Auto Promote System...")
-
-		// Setup database untuk auto promote
-		promoteDB, promoteRepo, err := database.InitializeDatabase(promoteCfg.PromoteDatabasePath)
-		if err != nil {
-			logger.Errorf("Failed to initialize promote database: %v", err)
-			os.Exit(1)
-		}
-		defer promoteDB.Close()
-
-		// Setup services (template service jika diperlukan)
-		// templateService := services.NewTemplateService(promoteRepo, logger)
-		autoPromoteService = services.NewAutoPromoteService(client, promoteRepo, logger)
-		// Set interval dari konfigurasi
-		autoPromoteService.SetInterval(promoteCfg.AutoPromoteInterval)
-		// Services untuk auto promote (jika diperlukan nanti)
-		// apiProductService := services.NewAPIProductService(templateService, logger)
-		// groupManagerService := services.NewGroupManagerService(client, promoteRepo, logger)
-
-		// Setup command handlers (if needed for specific use cases)
-		// promoteCommandHandler := handlers.NewPromoteCommandHandler(autoPromoteService, templateService, logger)
-		// adminCommandHandler := handlers.NewAdminCommandHandler(autoPromoteService, templateService, apiProductService, groupManagerService, logger, promoteCfg.AdminNumbers)
-
-		logger.Success("Auto Promote System initialized!")
-	}
-
 	// STEP 10: Daftarkan event handler ke client
 	client.AddEventHandler(eventHandler.HandleEvent)
 
@@ -210,24 +178,11 @@ func main() {
 		}
 	}
 
-	// STEP 13: Start Auto Promote Scheduler (jika diaktifkan)
-	if autoPromoteService != nil {
-		logger.Info("Starting Auto Promote Scheduler...")
-		autoPromoteService.StartScheduler()
-
-		// Log konfigurasi auto promote
-		logger.Infof("Auto Promote Config: %d admin(s), %d hour interval",
-			len(promoteCfg.AdminNumbers), promoteCfg.AutoPromoteInterval)
-	}
+	// STEP 13: (Dihapus: Start Auto Promote Scheduler)
 
 	// STEP 14: Bot siap digunakan
 	logger.Success("Bot berhasil terhubung ke WhatsApp!")
 	logger.Info("Bot siap menerima pesan...")
-
-	if promoteCfg.EnableAutoPromote {
-		logger.Success("🚀 Auto Promote System is READY!")
-		logger.Info("Commands: .aca, .disableaca, .promotehelp")
-	}
 
 	logger.Info("Tekan Ctrl+C untuk menghentikan bot")
 
@@ -249,12 +204,6 @@ func main() {
 
 	// STEP 17: Graceful shutdown
 	logger.Info("Menghentikan bot...")
-
-	// Stop auto promote scheduler jika berjalan
-	if autoPromoteService != nil {
-		logger.Info("Stopping Auto Promote Scheduler...")
-		autoPromoteService.StopScheduler()
-	}
 
 	// Disconnect menggunakan enhanced manager
 	waManager.Disconnect()
