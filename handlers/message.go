@@ -214,7 +214,7 @@ func (h *MessageHandler) getMessageText(msg *waProto.Message) string {
 func (h *MessageHandler) isBotMentioned(msg *waProto.Message) bool {
 	// Cek di extended text message (yang biasanya berisi mention)
 	if msg.GetExtendedTextMessage() != nil && msg.GetExtendedTextMessage().GetContextInfo() != nil {
-		mentions := msg.GetExtendedTextMessage().GetContextInfo().GetMentionedJid()
+		mentions := msg.GetExtendedTextMessage().GetContextInfo().GetMentionedJID()
 		botJID := h.client.Store.ID.String()
 
 		// Cek apakah JID bot ada dalam daftar mention

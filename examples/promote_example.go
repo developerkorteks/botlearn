@@ -131,7 +131,7 @@ func (p *PromoteHandler) parsePromoteTarget(evt *events.Message, messageText str
 		}
 		
 		// Jika ada mention dalam pesan
-		mentions := contextInfo.GetMentionedJid()
+		mentions := contextInfo.GetMentionedJID()
 		if len(mentions) > 0 {
 			targetJID, err := types.ParseJID(mentions[0])
 			if err != nil {
