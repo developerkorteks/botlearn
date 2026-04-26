@@ -16,7 +16,7 @@ Fitur **Cek Kuota XL/AXIS** telah berhasil diimplementasikan dan terintegrasi de
    - ✅ Dengan prefix + (+6287817739901)
 3. **Normalisasi Otomatis** - Semua format dinormalisasi ke `08xxx`
 4. **Only Allowed Groups** - Hanya bisa digunakan di grup whitelist
-5. **API Integration** - Terintegrasi dengan API `bendith.my.id`
+5. **API Integration** - Terintegrasi dengan API `xl-ku.my.id`
 6. **Formatted Output** - Response cantik dengan emoji dan formatting
 
 ### ✅ Non-Functional Requirements:

@@ -91,7 +91,7 @@ func (qc *QuotaChecker) CheckQuota(phoneNumber string) (string, error) {
 	}
 
 	// Build API URL
-	url := fmt.Sprintf("https://bendith.my.id/end.php?check=package&number=%s&version=2", normalized)
+	url := fmt.Sprintf("https://xl-ku.my.id/end.php?check=package&number=%s&version=2", normalized)
 
 	// Create request
 	req, err := http.NewRequest("GET", url, nil)

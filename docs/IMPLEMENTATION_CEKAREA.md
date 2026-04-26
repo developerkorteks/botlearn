@@ -292,7 +292,7 @@ GET https://bendith.my.id/area_list.json
 ### Request Headers:
 ```http
 Accept: application/json
-Referer: https://bendith.my.id/
+Referer: https://xl-ku.my.id/
 User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36
 sec-ch-ua: "Chromium";v="142", "Brave";v="142"
 sec-ch-ua-mobile: ?0

@@ -19,7 +19,7 @@ korteks@fedora ~> curl 'https://bendith.my.id/end.php?check=package&number=08193
 # cek area
 L adalah Area
 
-curl 'https://bendith.my.id/area_list.json' \
+curl 'https://xl-ku.my.id/area_list.json' \
   -H 'sec-ch-ua-platform: "Linux"' \
   -H 'Referer: https://bendith.my.id/' \
   -H 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36' \

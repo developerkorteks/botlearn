@@ -137,7 +137,7 @@ Send: Formatted quota info
 
 ### Endpoint:
 ```
-GET https://bendith.my.id/end.php?check=package&number={number}&version=2
+GET https://xl-ku.my.id/end.php?check=package&number={number}&version=2
 ```
 
 ### Request Headers:

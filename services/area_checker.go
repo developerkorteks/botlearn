@@ -45,7 +45,7 @@ func (ac *AreaChecker) FetchAreaList() error {
 	}
 
 	// Build API URL
-	url := "https://bendith.my.id/area_list.json"
+	url := "https://xl-ku.my.id/area_list.json"
 
 	// Create request
 	req, err := http.NewRequest("GET", url, nil)
