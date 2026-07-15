@@ -35,7 +35,7 @@ func (p *PromoteHandler) HandlePromoteCommand(evt *events.Message, messageText s
 	}
 
 	// STEP 2: Ambil informasi grup
-	groupInfo, err := p.client.GetGroupInfo(evt.Info.Chat)
+	groupInfo, err := p.client.GetGroupInfo(context.Background(), evt.Info.Chat)
 	if err != nil {
 		return "❌ Gagal mendapatkan informasi grup. Pastikan bot masih ada di grup."
 	}
@@ -122,7 +122,7 @@ func (p *PromoteHandler) parsePromoteTarget(evt *events.Message, messageText str
 		contextInfo := evt.Message.GetExtendedTextMessage().GetContextInfo()
 		
 		// Jika ada quoted message (reply)
-		if contextInfo.GetStanzaId() != "" && contextInfo.GetParticipant() != "" {
+		if contextInfo.GetStanzaID() != "" && contextInfo.GetParticipant() != "" {
 			targetJID, err := types.ParseJID(contextInfo.GetParticipant())
 			if err != nil {
 				return types.JID{}, fmt.Errorf("format JID tidak valid")
@@ -180,6 +180,7 @@ func (p *PromoteHandler) isValidPhoneNumber(phone string) bool {
 func (p *PromoteHandler) promoteUser(groupJID types.JID, targetJID types.JID) error {
 	// Gunakan whatsmeow API untuk promote user
 	_, err := p.client.UpdateGroupParticipants(
+		context.Background(),
 		groupJID,
 		[]types.JID{targetJID},
 		whatsmeow.ParticipantChangePromote,
@@ -192,6 +193,7 @@ func (p *PromoteHandler) promoteUser(groupJID types.JID, targetJID types.JID) er
 func (p *PromoteHandler) demoteUser(groupJID types.JID, targetJID types.JID) error {
 	// Gunakan whatsmeow API untuk demote user
 	_, err := p.client.UpdateGroupParticipants(
+		context.Background(),
 		groupJID,
 		[]types.JID{targetJID},
 		whatsmeow.ParticipantChangeDemote,

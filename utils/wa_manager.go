@@ -302,8 +302,16 @@ func (w *WAManager) Disconnect() {
 
 // PairByPhone melakukan pairing via nomor telepon dengan aman
 func (w *WAManager) PairByPhone(ctx context.Context, client *whatsmeow.Client, phone string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
 	w.phonePairMu.Lock()
 	defer w.phonePairMu.Unlock()
+
+	if w.Container == nil {
+		return "", fmt.Errorf("WAManager container belum diinisialisasi")
+	}
 
 	// Pastikan tidak ada koneksi aktif
 	if client != nil && client.IsConnected() {

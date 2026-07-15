@@ -31,10 +31,11 @@ type DashboardServer struct {
 	dashboardQR    *utils.DashboardQRHandler
 
 	// QR and Pairing code state
-	currentQRCode      string
-	currentPairingCode string
-	qrMutex            sync.RWMutex
-	pairingMutex       sync.RWMutex
+	currentQRCode          string
+	currentPairingCode     string
+	lastPhonePairingError  string // error terakhir dari phone pairing (surfacing ke frontend)
+	qrMutex                sync.RWMutex
+	pairingMutex           sync.RWMutex
 
 	// Callback functions for dynamic DB swap
 	onReloadSessionDB func() error
@@ -3153,6 +3154,13 @@ func (s *DashboardServer) handleQRPairing(w http.ResponseWriter, r *http.Request
 
 // handleQRImage mengembalikan QR code sebagai base64 image
 func (s *DashboardServer) handleQRImage(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -3160,6 +3168,18 @@ func (s *DashboardServer) handleQRImage(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Jika ada error pairing (mis. 405 outdated), langsung laporkan ke frontend
+	if s.dashboardQR != nil {
+		if errMsg := s.dashboardQR.GetLastError(); errMsg != "" {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success":   false,
+				"message":   errMsg,
+				"qr_active": false,
+			})
+			return
+		}
+	}
 
 	// QUICK FIX: Check existing QR file first
 	qrPath := "data/qrcode.png"
@@ -3287,14 +3307,30 @@ func (s *DashboardServer) handlePhonePairing(w http.ResponseWriter, r *http.Requ
 	go func() {
 		s.logger.Infof("📱 Memulai pairing dengan nomor: %s", phoneNumber)
 
+		// Reset error state saat mulai pairing baru
+		s.pairingMutex.Lock()
+		s.lastPhonePairingError = ""
+		s.pairingMutex.Unlock()
+
 		// Request pairing code using WAManager (safe flow)
 		if s.waManager == nil {
 			s.logger.Error("WAManager tidak tersedia")
+			s.pairingMutex.Lock()
+			s.lastPhonePairingError = "WAManager tidak tersedia"
+			s.pairingMutex.Unlock()
 			return
 		}
-		code, err := s.waManager.PairByPhone(context.Background(), s.whatsappClient, phoneNumber)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		code, err := s.waManager.PairByPhone(ctx, s.whatsappClient, phoneNumber)
 		if err != nil {
+			errMsg := fmt.Sprintf("❌ Gagal pairing dengan nomor %s: %v", phoneNumber, err)
 			s.logger.Errorf("❌ Gagal request pairing code: %v", err)
+			s.pairingMutex.Lock()
+			s.lastPhonePairingError = errMsg
+			s.pairingMutex.Unlock()
 			return
 		}
 
@@ -3308,28 +3344,41 @@ func (s *DashboardServer) handlePhonePairing(w http.ResponseWriter, r *http.Requ
 
 		s.logger.Info("✅ Pairing code tersedia di dashboard")
 
-		// Refresh main client and reconnect so dashboard sees logged-in state
 		go func() {
 			defer func() { recover() }()
 			if s.waManager == nil {
 				return
 			}
-			deviceStore, err := s.waManager.Container.GetFirstDevice(context.Background())
-			if err != nil {
-				s.logger.Errorf("Gagal ambil device store setelah pairing: %v", err)
+
+			maxRetries := 8
+			for i := 0; i < maxRetries; i++ {
+				if i > 0 {
+					time.Sleep(3 * time.Second)
+				}
+
+				deviceStore, err := s.waManager.Container.GetFirstDevice(context.Background())
+				if err != nil {
+					s.logger.Errorf("Gagal ambil device store setelah pairing: %v", err)
+					continue
+				}
+
+				clientLog := waLog.Stdout("WhatsApp", "INFO", true)
+				newClient := whatsmeow.NewClient(deviceStore, clientLog)
+				s.whatsappClient = newClient
+				s.waManager.Client = newClient
+				newClient.EnableAutoReconnect = true
+				newClient.DisableLoginAutoReconnect = false
+
+				if err := s.waManager.ConnectSafely(); err != nil {
+					s.logger.Infof("Reconnect setelah phone pairing percobaan %d/%d gagal: %v", i+1, maxRetries, err)
+					continue
+				}
+
+				s.logger.Success("Reconnect setelah phone pairing berhasil")
 				return
 			}
-			clientLog := waLog.Stdout("WhatsApp", "INFO", true)
-			newClient := whatsmeow.NewClient(deviceStore, clientLog)
-			s.whatsappClient = newClient
-			s.waManager.Client = newClient
-			newClient.EnableAutoReconnect = true
-			newClient.DisableLoginAutoReconnect = false
-			if err := s.waManager.ConnectSafely(); err != nil {
-				s.logger.Errorf("Reconnect setelah phone pairing gagal: %v", err)
-			} else {
-				s.logger.Success("Reconnect setelah phone pairing berhasil")
-			}
+
+			s.logger.Errorf("Reconnect setelah phone pairing gagal setelah %d percobaan", maxRetries)
 		}()
 	}()
 
@@ -3471,13 +3520,13 @@ func (s *DashboardServer) handleLogout(w http.ResponseWriter, r *http.Request) {
 			_ = s.whatsappClient.Logout(context.Background())
 		}
 
-		// Backup session.db lama agar file handle dilepas secara aman dan tidak readonly
-		timestamp := time.Now().Format("20060102_150405")
-		_ = os.Rename("data/session.db", fmt.Sprintf("data/session_%s.db.old", timestamp))
-		_ = os.Remove("data/session.db-wal")
-		_ = os.Remove("data/session.db-shm")
-
-		s.logger.Success("📦 WA Session lama di-backup untuk sesi baru.")
+		// Backup session.db lama ke file .old (rename aman, bukan remove lalu rename)
+		backupPath, berr := s.backupSessionDB()
+		if berr != nil {
+			s.logger.Errorf("⚠️ Gagal backup session: %v", berr)
+		} else if backupPath != "" {
+			s.logger.Successf("📦 WA Session lama di-backup: %s", backupPath)
+		}
 
 		// Reset dashboard states
 		s.pairingMutex.Lock()
@@ -3529,16 +3578,13 @@ func (s *DashboardServer) handleFullReset(w http.ResponseWriter, r *http.Request
 		s.whatsappClient.DisableLoginAutoReconnect = true
 		s.whatsappClient.Disconnect()
 	}
-	// Hapus file session DB (termasuk WAL/SHM) dan db pembelajaran
-	_ = os.Remove("data/session.db")
-	_ = os.Remove("data/session.db-wal")
-	_ = os.Remove("data/session.db-shm")
-
-	// Rename session.db yang lama ke .old supaya tidak readonly
-	timestamp := time.Now().Format("20060102_150405")
-	_ = os.Rename("data/session.db", fmt.Sprintf("data/session_%s.db.old", timestamp))
-	_ = os.Remove("data/session.db-wal")
-	_ = os.Remove("data/session.db-shm")
+	// Backup session.db lama ke file .old (rename aman, bukan remove lalu rename)
+	backupPath, berr := s.backupSessionDB()
+	if berr != nil {
+		s.logger.Errorf("⚠️ Gagal backup session: %v", berr)
+	} else if backupPath != "" {
+		s.logger.Successf("📦 WA Session lama di-backup: %s", backupPath)
+	}
 
 	_ = os.Remove("data/qrcode.png")
 
@@ -3585,9 +3631,19 @@ func (s *DashboardServer) handleGetPairingCode(w http.ResponseWriter, r *http.Re
 
 	s.pairingMutex.RLock()
 	pairingCode := s.currentPairingCode
+	phoneErr := s.lastPhonePairingError
 	s.pairingMutex.RUnlock()
 
 	if pairingCode == "" {
+		if phoneErr != "" {
+			// Ada error dari phone pairing — laporkan ke frontend
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": phoneErr,
+				"error":   true,
+			})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
 			"message": "Pairing code belum tersedia",
@@ -3600,4 +3656,23 @@ func (s *DashboardServer) handleGetPairingCode(w http.ResponseWriter, r *http.Re
 		"pairing_code": pairingCode,
 		"message":      "Pairing code ready",
 	})
+}
+
+// backupSessionDB memindahkan session.db lama ke file backup (.old).
+// Menggunakan rename (bukan remove lalu rename) sehingga file asli aman
+// dipindahkan dan tidak tertinggal sebagai file readonly.
+// Mengembalikan path backup, atau string kosong jika tidak ada session.
+func (s *DashboardServer) backupSessionDB() (string, error) {
+	dbPath := "data/session.db"
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		return "", nil
+	}
+	timestamp := time.Now().Format("20060102_150405")
+	backupPath := fmt.Sprintf("data/session_%s.db.old", timestamp)
+	if err := os.Rename(dbPath, backupPath); err != nil {
+		return "", err
+	}
+	_ = os.Remove(dbPath + "-wal")
+	_ = os.Remove(dbPath + "-shm")
+	return backupPath, nil
 }

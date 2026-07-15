@@ -151,6 +151,8 @@ func main() {
 	go func() {
 		if err := dashboardServer.StartServer(port); err != nil {
 			logger.Errorf("Dashboard server error: %v", err)
+			logger.Error("Dashboard gagal start — bot dihentikan agar tidak jalan buta (silent failure).")
+			os.Exit(1)
 		}
 	}()
 	logger.Successf("Dashboard server started on http://localhost:%d", port)

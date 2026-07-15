@@ -21,6 +21,12 @@ type DashboardQRHandler struct {
 	isActive      bool
 	activeMutex   sync.RWMutex
 
+	// lastError menyimpan pesan error terakhir dari proses pairing
+	// (mis. "err-client-outdated" / 405) agar bisa dilaporkan ke dashboard,
+	// bukan hanya dicetak ke log.
+	lastError string
+	lastErrMu sync.RWMutex
+
 	// cancel context for QR pairing
 	pairCtx    context.Context
 	pairCancel context.CancelFunc
@@ -40,6 +46,20 @@ func (dqh *DashboardQRHandler) GetCurrentQRCode() string {
 	dqh.qrMutex.RLock()
 	defer dqh.qrMutex.RUnlock()
 	return dqh.currentQRCode
+}
+
+// SetLastError menyimpan pesan error pairing terakhir.
+func (dqh *DashboardQRHandler) SetLastError(msg string) {
+	dqh.lastErrMu.Lock()
+	defer dqh.lastErrMu.Unlock()
+	dqh.lastError = msg
+}
+
+// GetLastError mengembalikan pesan error pairing terakhir (kosong bila tidak ada).
+func (dqh *DashboardQRHandler) GetLastError() string {
+	dqh.lastErrMu.RLock()
+	defer dqh.lastErrMu.RUnlock()
+	return dqh.lastError
 }
 
 // SetQRCode sets current QR code
@@ -87,8 +107,9 @@ func (dqh *DashboardQRHandler) StartDashboardQRPairing() error {
 	dqh.isActive = true
 	dqh.activeMutex.Unlock()
 
-	// Clear any previous QR code
+	// Clear any previous QR code and error state
 	dqh.ClearQRCode()
+	dqh.SetLastError("")
 
 	dqh.logger.Info("🔄 Memulai QR pairing untuk dashboard...")
 
@@ -126,43 +147,54 @@ func (dqh *DashboardQRHandler) StartDashboardQRPairing() error {
 		for {
 			select {
 			case evt, ok := <-qrChan:
-				if !ok {
-					dqh.logger.Warning("QR channel tertutup")
-					return
-				}
-				
-				switch evt.Event {
-				case "code":
-					// Set QR code untuk dashboard
-					dqh.SetQRCode(evt.Code)
-					dqh.logger.Infof("📱 QR code baru tersedia di dashboard: %s", evt.Code[:50]+"...")
-					
-					// Juga tampilkan di terminal sebagai backup
-					err := dqh.qrGenerator.GenerateAndDisplay(evt.Code)
-					if err != nil {
-						dqh.logger.Errorf("Gagal tampilkan QR di terminal: %v", err)
-					} else {
-						dqh.logger.Info("✅ QR code juga disimpan untuk dashboard")
+					if !ok {
+						// Channel ditutup — bisa karena error (mis. 405) atau selesai
+						if dqh.GetLastError() == "" {
+							dqh.SetLastError("QR channel tertutup tanpa berhasil — cek koneksi / versi library")
+						}
+						dqh.logger.Warning("QR channel tertutup")
+						return
 					}
-					
-				case "success":
-					dqh.logger.Success("✅ QR pairing berhasil!")
-					return
-					
-				case "timeout":
-					dqh.logger.Warning("⏰ QR code timeout, generating QR baru...")
-					
-				case "error":
-					dqh.logger.Error("❌ Error dalam QR pairing")
-					return
-					
-				default:
-					dqh.logger.Debugf("QR event: %s", evt.Event)
-				}
+
+					switch evt.Event {
+					case "code":
+						// QR code baru → reset error state, tampilkan ke dashboard & terminal
+						dqh.SetLastError("")
+						dqh.SetQRCode(evt.Code)
+						dqh.logger.Infof("📱 QR code baru tersedia di dashboard: %s", evt.Code[:50]+"...")
+
+						err := dqh.qrGenerator.GenerateAndDisplay(evt.Code)
+						if err != nil {
+							dqh.logger.Errorf("Gagal tampilkan QR di terminal: %v", err)
+						} else {
+							dqh.logger.Info("✅ QR code juga disimpan untuk dashboard")
+						}
+
+					case "success":
+						dqh.SetLastError("")
+						dqh.logger.Success("✅ QR pairing berhasil!")
+						return
+
+					case "timeout":
+						// Timeout WA: QR kadaluarsa, whatsmeow akan kirim code baru
+						dqh.logger.Warning("⏰ QR code timeout, generating QR baru...")
+
+					case "error":
+						dqh.SetLastError("❌ QR pairing error dari server WhatsApp")
+						dqh.logger.Error("❌ Error dalam QR pairing")
+						return
+
+					default:
+						// Tangkap event tidak dikenal — mis. "err-client-outdated" (405)
+						errMsg := fmt.Sprintf("❌ QR pairing gagal: %s", evt.Event)
+						dqh.SetLastError(errMsg)
+						dqh.logger.Debugf("QR event: %s", evt.Event)
+					}
 				
 			case <-timeout:
-				dqh.logger.Error("⏰ QR pairing timeout (3 menit)")
-				return
+					dqh.SetLastError("⏰ QR pairing timeout (3 menit) — coba lagi")
+					dqh.logger.Error("⏰ QR pairing timeout (3 menit)")
+					return
 			}
 		}
 	}()
