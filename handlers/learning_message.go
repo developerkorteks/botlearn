@@ -117,7 +117,7 @@ func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
 	text := h.getMessageText(evt.Message)
 	lowerText := strings.ToLower(strings.TrimSpace(text))
 
-	// Intercept .checkbug command (works in allowed groups and personal chat)
+	// Intercept .checkbug command (works in allowed groups, personal chat, or by the bot's own number)
 	if strings.HasPrefix(lowerText, ".checkbug") {
 		// Parse args
 		parts := strings.Fields(text)
@@ -125,9 +125,9 @@ func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
 		if len(parts) > 1 {
 			args = parts[1:]
 		}
-		// Validate context: if group, ensure allowed
+		// Validate context: if group (and not from bot's own number), ensure allowed
 		isGroup := strings.HasSuffix(chatJID.String(), "@g.us")
-		if isGroup {
+		if isGroup && !evt.Info.IsFromMe {
 			if !h.learningService.IsGroupAllowed(chatJID.String()) {
 				h.logger.Debugf(".checkbug blocked - group %s not allowed", chatJID.String())
 				return
@@ -138,7 +138,7 @@ func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
 		return
 	}
 
-	// Intercept .checkkuota command (works in allowed groups only)
+	// Intercept .checkkuota command (works in allowed groups, or by the bot's own number)
 	if strings.HasPrefix(lowerText, ".checkkuota") {
 		// Parse args
 		parts := strings.Fields(text)
@@ -148,17 +148,19 @@ func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
 		}
 		phoneNumber := parts[1]
 
-		// Validate context: only works in allowed groups
+		// Validate context: allowed groups, atau nomor bot sendiri (IsFromMe)
 		isGroup := strings.HasSuffix(chatJID.String(), "@g.us")
-		if isGroup {
-			if !h.learningService.IsGroupAllowed(chatJID.String()) {
-				h.logger.Debugf(".checkkuota blocked - group %s not allowed", chatJID.String())
+		if !evt.Info.IsFromMe {
+			if isGroup {
+				if !h.learningService.IsGroupAllowed(chatJID.String()) {
+					h.logger.Debugf(".checkkuota blocked - group %s not allowed", chatJID.String())
+					return
+				}
+			} else {
+				// Personal chat dari orang lain - tidak diizinkan
+				h.logger.Debugf(".checkkuota blocked - only works in allowed groups")
 				return
 			}
-		} else {
-			// Personal chat - tidak diizinkan
-			h.logger.Debugf(".checkkuota blocked - only works in allowed groups")
-			return
 		}
 
 		// Run checkkuota
@@ -166,7 +168,7 @@ func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
 		return
 	}
 
-	// Intercept .checkarea command (works in allowed groups only)
+	// Intercept .checkarea command (works in allowed groups, or by the bot's own number)
 	if strings.HasPrefix(lowerText, ".checkarea") {
 		// Parse args
 		parts := strings.Fields(text)
@@ -177,17 +179,19 @@ func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
 		// Join all parts after command as area name (support multi-word)
 		areaName := strings.Join(parts[1:], " ")
 
-		// Validate context: only works in allowed groups
+		// Validate context: allowed groups, atau nomor bot sendiri (IsFromMe)
 		isGroup := strings.HasSuffix(chatJID.String(), "@g.us")
-		if isGroup {
-			if !h.learningService.IsGroupAllowed(chatJID.String()) {
-				h.logger.Debugf(".checkarea blocked - group %s not allowed", chatJID.String())
+		if !evt.Info.IsFromMe {
+			if isGroup {
+				if !h.learningService.IsGroupAllowed(chatJID.String()) {
+					h.logger.Debugf(".checkarea blocked - group %s not allowed", chatJID.String())
+					return
+				}
+			} else {
+				// Personal chat dari orang lain - tidak diizinkan
+				h.logger.Debugf(".checkarea blocked - only works in allowed groups")
 				return
 			}
-		} else {
-			// Personal chat - tidak diizinkan
-			h.logger.Debugf(".checkarea blocked - only works in allowed groups")
-			return
 		}
 
 		// Run checkarea
@@ -195,19 +199,21 @@ func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
 		return
 	}
 
-	// Intercept .checkstock command (works in allowed groups only)
+	// Intercept .checkstock command (works in allowed groups, or by the bot's own number)
 	if strings.HasPrefix(lowerText, ".checkstock") {
-		// Validate context: only works in allowed groups
+		// Validate context: allowed groups, atau nomor bot sendiri (IsFromMe)
 		isGroup := strings.HasSuffix(chatJID.String(), "@g.us")
-		if isGroup {
-			if !h.learningService.IsGroupAllowed(chatJID.String()) {
-				h.logger.Debugf(".checkstock blocked - group %s not allowed", chatJID.String())
+		if !evt.Info.IsFromMe {
+			if isGroup {
+				if !h.learningService.IsGroupAllowed(chatJID.String()) {
+					h.logger.Debugf(".checkstock blocked - group %s not allowed", chatJID.String())
+					return
+				}
+			} else {
+				// Personal chat dari orang lain - tidak diizinkan
+				h.logger.Debugf(".checkstock blocked - only works in allowed groups")
 				return
 			}
-		} else {
-			// Personal chat - tidak diizinkan
-			h.logger.Debugf(".checkstock blocked - only works in allowed groups")
-			return
 		}
 
 		// Run checkstock
@@ -215,10 +221,9 @@ func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
 		return
 	}
 
-	// STEP 1: Skip pesan dari diri sendiri
-	if evt.Info.IsFromMe {
-		return
-	}
+	// STEP 1: Nomor bot sendiri (IsFromMe) tetap diproses agar bisa pakai
+	// semua command di mana saja. Pembatasan whitelist grup hanya berlaku
+	// untuk user lain (lihat handleGroupMessage / handlePersonalMessage).
 
 	// STEP 2: Ambil teks dari pesan
 	messageText := h.getMessageText(evt.Message)
@@ -250,20 +255,26 @@ func (h *LearningMessageHandler) HandleMessage(evt *events.Message) {
 
 // handleGroupMessage menangani pesan dari grup
 func (h *LearningMessageHandler) handleGroupMessage(evt *events.Message, groupJID, userJID, messageText string) {
-	// Cek apakah grup diizinkan untuk menggunakan bot
-	if !h.learningService.IsGroupAllowed(groupJID) {
+	isSelf := evt.Info.IsFromMe
+
+	// Cek apakah grup diizinkan untuk menggunakan bot.
+	// Nomor bot sendiri (IsFromMe) selalu diizinkan terlepas dari whitelist.
+	if !isSelf && !h.learningService.IsGroupAllowed(groupJID) {
 		// BOT DIAM TOTAL - tidak ada response apapun
 		h.logger.Debugf("👥 Group not allowed: %s | Message ignored", groupJID)
 		return
 	}
 
-	// Grup diizinkan, proses pesan
+	// Grup diizinkan (atau pesan dari nomor bot sendiri), proses pesan
 	h.logger.Debugf("👥 Processing group message: %s", groupJID)
 
-	// Cek dan tendang pengguna jika mengirim kata terlarang
-	if err := h.learningService.CheckAndHandleForbiddenWord(evt); err != nil {
-		h.logger.Errorf("Error handling forbidden word: %v", err)
-		// Lanjutkan proses meskipun gagal menendang
+	// Cek dan tendang pengguna jika mengirim kata terlarang.
+	// Dilewati untuk nomor bot sendiri agar tidak menendang diri sendiri.
+	if !isSelf {
+		if err := h.learningService.CheckAndHandleForbiddenWord(evt); err != nil {
+			h.logger.Errorf("Error handling forbidden word: %v", err)
+			// Lanjutkan proses meskipun gagal menendang
+		}
 	}
 
 	// Cek apakah ini command (.command)
@@ -272,21 +283,30 @@ func (h *LearningMessageHandler) handleGroupMessage(evt *events.Message, groupJI
 		return
 	}
 
-	// Cek auto response untuk kata kunci
-	h.handleAutoResponse(groupJID, userJID, messageText)
+	// Cek auto response untuk kata kunci (hanya untuk user lain)
+	if !isSelf {
+		h.handleAutoResponse(groupJID, userJID, messageText)
+	}
 }
 
-// handlePersonalMessage menangani pesan personal (admin only)
+// handlePersonalMessage menangani pesan personal (admin atau nomor bot sendiri)
 func (h *LearningMessageHandler) handlePersonalMessage(evt *events.Message, userJID, messageText string) {
-	// Cek apakah user adalah admin
-	if !h.isAdmin(userJID) {
+	isSelf := evt.Info.IsFromMe
+
+	// Nomor bot sendiri: hanya proses command, abaikan obrolan biasa
+	if isSelf && !strings.HasPrefix(messageText, ".") {
+		return
+	}
+
+	// Cek apakah user adalah admin (atau nomor bot sendiri)
+	if !isSelf && !h.isAdmin(userJID) {
 		h.logger.Debugf("💬 Non-admin personal message ignored: %s", userJID)
 		return // Bot diam untuk non-admin
 	}
 
-	h.logger.Debugf("💬 Processing admin personal message: %s", userJID)
+	h.logger.Debugf("💬 Processing personal message: %s", userJID)
 
-	// Admin command processing
+	// Command processing
 	if strings.HasPrefix(messageText, ".") {
 		h.handleAdminCommand(evt, userJID, messageText)
 		return

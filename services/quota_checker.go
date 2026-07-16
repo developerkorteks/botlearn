@@ -23,6 +23,19 @@ func NewQuotaChecker() *QuotaChecker {
 	}
 }
 
+// xlKuBaseURL is the endpoint origin for xl-ku.my.id
+const xlKuBaseURL = "https://xl-ku.my.id"
+
+// xlKuToken is the static custom header value required by xl-ku.my.id.
+// Front-end sends it via header "xl-b6ad573c87". Per analysis this token is
+// static (not time-based) but the site may rotate it. If requests start
+// returning 404/403 again, replace this value with the one embedded in the
+// site's latest JS (var y77885bc9bf5518b4).
+// NOTE: the user's proven-working curl used a different value
+// (ZiUm-H9T-2YAo6UKO_Ot_ErTYJiRiF_DxUGwVoDS2step3m6fhIh4ZMcL4BlmD4Of5o-STMJB8pOVtkR0Lty8ZLpgvS7Aj6SB_UNFh4sNYmTfH4SGTep51IAmgwfDArXfTSsSiLkCQ);
+// the value below is the one from the site JS at the time of analysis.
+const xlKuToken = "IJ6U0UEerPgOwGdEJJVhBTq5KVJA3fHUmWofUg449nHuDfhoq-w4jOUtRhUGn-1hcXrsU-H44_an0b_KmLbxfOlnraiIsDwdu3K476ifKP7La4iUzvcLpNJYjLGqLKRavMlSYdoFYw"
+
 // QuotaResponse represents the API response structure
 type QuotaResponse struct {
 	Success bool   `json:"success"`
@@ -90,8 +103,8 @@ func (qc *QuotaChecker) CheckQuota(phoneNumber string) (string, error) {
 		return "", fmt.Errorf("Format nomor tidak valid. Gunakan format: 08xxx atau 628xxx")
 	}
 
-	// Build API URL
-	url := fmt.Sprintf("https://xl-ku.my.id/end.php?check=package&number=%s&version=2", normalized)
+	// Build API URL — endpoint resmi dari front-end xl-ku.my.id
+	url := fmt.Sprintf("%s/check/all-info/%s", xlKuBaseURL, normalized)
 
 	// Create request
 	req, err := http.NewRequest("GET", url, nil)
@@ -99,14 +112,22 @@ func (qc *QuotaChecker) CheckQuota(phoneNumber string) (string, error) {
 		return "", fmt.Errorf("Gagal membuat request: %v", err)
 	}
 
-	// Add headers to mimic browser request
+	// Add headers to mimic the browser request exactly like the site's JS does.
+	// xl-ku.my.id (Cloudflare) will answer 404 for requests without the
+	// custom token header or without browser-like headers.
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("Referer", "https://bendith.my.id/")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Referer", "https://xl-ku.my.id/")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.Header.Set("Sec-Ch-Ua", `"Not;A=Brand";v="8", "Chromium";v="150", "Brave";v="150"`)
+	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
+	req.Header.Set("Sec-Ch-Ua-Platform", `"Linux"`)
 	req.Header.Set("Sec-Fetch-Dest", "empty")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("xl-b6ad573c87", xlKuToken)
 
 	// Execute request
 	resp, err := qc.client.Do(req)
@@ -121,8 +142,8 @@ func (qc *QuotaChecker) CheckQuota(phoneNumber string) (string, error) {
 		return "", fmt.Errorf("Gagal membaca response: %v", err)
 	}
 
-	// Check HTTP status - API returns 201 (Created) instead of 200 (OK)
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+	// Check HTTP status
+	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("API mengembalikan error: HTTP %d", resp.StatusCode)
 	}
 
