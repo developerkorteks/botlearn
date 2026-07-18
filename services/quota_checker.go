@@ -5,13 +5,22 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
 // QuotaChecker handles checking mobile data quota
 type QuotaChecker struct {
 	client *http.Client
+
+	// tokenCache caches the dynamic xl-ku.my.id header (name+value) that the
+	// site rotates. It is refreshed automatically when stale.
+	tokenMu      sync.Mutex
+	tokenHeader  string
+	tokenValue   string
+	tokenExpiry  time.Time
 }
 
 // NewQuotaChecker creates a new quota checker service
@@ -26,15 +35,26 @@ func NewQuotaChecker() *QuotaChecker {
 // xlKuBaseURL is the endpoint origin for xl-ku.my.id
 const xlKuBaseURL = "https://xl-ku.my.id"
 
-// xlKuToken is the static custom header value required by xl-ku.my.id.
-// Front-end sends it via header "xl-b6ad573c87". Per analysis this token is
-// static (not time-based) but the site may rotate it. If requests start
-// returning 404/403 again, replace this value with the one embedded in the
-// site's latest JS (var y77885bc9bf5518b4).
-// NOTE: the user's proven-working curl used a different value
-// (ZiUm-H9T-2YAo6UKO_Ot_ErTYJiRiF_DxUGwVoDS2step3m6fhIh4ZMcL4BlmD4Of5o-STMJB8pOVtkR0Lty8ZLpgvS7Aj6SB_UNFh4sNYmTfH4SGTep51IAmgwfDArXfTSsSiLkCQ);
-// the value below is the one from the site JS at the time of analysis.
-const xlKuToken = "IJ6U0UEerPgOwGdEJJVhBTq5KVJA3fHUmWofUg449nHuDfhoq-w4jOUtRhUGn-1hcXrsU-H44_an0b_KmLbxfOlnraiIsDwdu3K476ifKP7La4iUzvcLpNJYjLGqLKRavMlSYdoFYw"
+// xlKuTokenTTL is how long a scraped token is considered fresh before we
+// re-scrape the homepage for a new one. The site rotates the token, so we
+// must not cache it forever.
+const xlKuTokenTTL = 10 * time.Minute
+
+// xlKuFallbackHeader / xlKuFallbackValue are used only if scraping the
+// homepage fails. Update these if the site changes its token scheme and
+// scraping is temporarily broken.
+const (
+	xlKuFallbackHeader = "xl-88740fafdf"
+	xlKuFallbackValue  = "4H-4XGlbBYrKNotrg6_yS2JPzkNRg91-oLSakD_60bpMNqxJXcrf_bhkEbuAUfRHUSxGVBgWbf2hrGW8OPbYQOAAjO-sjetMtdpNd_sV4VyU9Zvp7Io2Y2U9W2unETVnwzZ7Hbh1yw"
+)
+
+// tokenHeaderRe finds the custom "xl-xxxxxxxxxx": varName used in the
+// check/all-info ajax settings block of the homepage. The site rotates this
+// token (and the header name), so we scrape the current one from the HTML.
+var tokenHeaderRe = regexp.MustCompile(`url:\s*baseUrl\s*\+\s*"check/all-info/[\s\S]*?headers:\s*\{[\s\S]*?"(xl-[0-9a-f]+)":\s*([a-zA-Z0-9_]+)`)
+
+// varValueRe finds `var <name> = "<value>"` assignments in the homepage JS.
+var varValueRe = regexp.MustCompile(`var\s+([a-zA-Z0-9_]+)\s*=\s*"([^"]+)"`)
 
 // QuotaResponse represents the API response structure
 type QuotaResponse struct {
@@ -112,6 +132,12 @@ func (qc *QuotaChecker) CheckQuota(phoneNumber string) (string, error) {
 		return "", fmt.Errorf("Gagal membuat request: %v", err)
 	}
 
+	// Dapatkan token header dinamis dari homepage (site merotasi token).
+	headerName, headerValue, err := qc.getXLKuToken()
+	if err != nil {
+		return "", fmt.Errorf("Gagal mengambil token xl-ku: %v", err)
+	}
+
 	// Add headers to mimic the browser request exactly like the site's JS does.
 	// xl-ku.my.id (Cloudflare) will answer 404 for requests without the
 	// custom token header or without browser-like headers.
@@ -127,7 +153,7 @@ func (qc *QuotaChecker) CheckQuota(phoneNumber string) (string, error) {
 	req.Header.Set("Sec-Fetch-Dest", "empty")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	req.Header.Set("xl-b6ad573c87", xlKuToken)
+	req.Header.Set(headerName, headerValue)
 
 	// Execute request
 	resp, err := qc.client.Do(req)
@@ -160,6 +186,75 @@ func (qc *QuotaChecker) CheckQuota(phoneNumber string) (string, error) {
 
 	// Format the response
 	return qc.FormatQuotaResponse(&quotaResp), nil
+}
+
+// getXLKuToken returns the current dynamic header (name + value) that
+// xl-ku.my.id expects. The site rotates this token, so we scrape it from the
+// homepage HTML on each call (cached for xlKuTokenTTL to avoid hammering).
+// If scraping fails we fall back to the last-known constant.
+func (qc *QuotaChecker) getXLKuToken() (string, string, error) {
+	qc.tokenMu.Lock()
+	defer qc.tokenMu.Unlock()
+
+	// Return cached token if still fresh
+	if qc.tokenHeader != "" && time.Now().Before(qc.tokenExpiry) {
+		return qc.tokenHeader, qc.tokenValue, nil
+	}
+
+	headerName, value, err := qc.scrapeXLKuToken()
+	if err != nil {
+		// Fallback to last-known constant if we have one cached
+		if qc.tokenHeader != "" {
+			return qc.tokenHeader, qc.tokenValue, nil
+		}
+		// No cached token and scrape failed -> use baked-in fallback
+		return xlKuFallbackHeader, xlKuFallbackValue, nil
+	}
+
+	qc.tokenHeader = headerName
+	qc.tokenValue = value
+	qc.tokenExpiry = time.Now().Add(xlKuTokenTTL)
+	return headerName, value, nil
+}
+
+// scrapeXLKuToken fetches the homepage and extracts the current xl-ku token
+// header name + value from the embedded JS.
+func (qc *QuotaChecker) scrapeXLKuToken() (string, string, error) {
+	req, err := http.NewRequest("GET", xlKuBaseURL+"/", nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	resp, err := qc.client.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", err
+	}
+	html := string(body)
+
+	// Find the header name + variable name used in the check/all-info settings
+	m := tokenHeaderRe.FindStringSubmatch(html)
+	if len(m) < 3 {
+		return "", "", fmt.Errorf("tidak bisa menemukan header token xl-ku di homepage")
+	}
+	headerName := m[1]
+	varName := m[2]
+
+	// Find the variable's value: var <varName> = "value"
+	valueRe := regexp.MustCompile(`var\s+` + regexp.QuoteMeta(varName) + `\s*=\s*"([^"]+)"`)
+	vm := valueRe.FindStringSubmatch(html)
+	if len(vm) < 2 {
+		return "", "", fmt.Errorf("tidak bisa menemukan nilai token untuk %s", varName)
+	}
+
+	return headerName, vm[1], nil
 }
 
 // FormatQuotaResponse formats the quota response into a readable message
