@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"regexp"
 	"strings"
 	"sync"
@@ -26,9 +27,12 @@ type QuotaChecker struct {
 
 // NewQuotaChecker creates a new quota checker service
 func NewQuotaChecker() *QuotaChecker {
+	// Cookie jar agar session cookie dari homepage ikut dikirim ke API
+	jar, _ := cookiejar.New(nil)
 	return &QuotaChecker{
 		client: &http.Client{
 			Timeout: 30 * time.Second,
+			Jar:     jar,
 		},
 	}
 }
@@ -40,9 +44,8 @@ const xlKuBaseURL = "https://xl-ku.my.id"
 // builder. The site rotates token values here on every deploy.
 const xlKuCheckPackageJS = xlKuBaseURL + "/xlkujs/check-package?v=1.0.1"
 
-// xlKuTokenTTL is how long a scraped token is considered fresh before we
-// re-scrape the JS for a new one.
-const xlKuTokenTTL = 10 * time.Minute
+// xlKuTokenTTL — TTL singkat (2 menit) karena site sering rotasi token.
+const xlKuTokenTTL = 2 * time.Minute
 
 // xlKuFallbackHeader / xlKuFallbackValue are used only if scraping fails
 // and no previously cached value exists. Update when site rotates token.
@@ -130,6 +133,22 @@ func decodeJSFunc(name string, funcs map[string]string, depth int) string {
 			var sb strings.Builder
 			for _, c := range calls {
 				sb.WriteString(decodeJSFunc(c[1], funcs, depth+1))
+			}
+			if sb.Len() > 0 {
+				return sb.String()
+			}
+		}
+	}
+
+	// ── Pattern 1c: string accumulator with += ────────────────────────────────
+	// var s=''; s+=fn1(); s+=fn2(); ... return s;
+	if strings.Contains(body, "+=") && strings.Contains(body, "return ") {
+		accRe := regexp.MustCompile(`\w+\+=(\w+)\(\)`)
+		matches := accRe.FindAllStringSubmatch(body, -1)
+		if len(matches) > 0 {
+			var sb strings.Builder
+			for _, m := range matches {
+				sb.WriteString(decodeJSFunc(m[1], funcs, depth+1))
 			}
 			if sb.Len() > 0 {
 				return sb.String()
@@ -285,8 +304,13 @@ func (qc *QuotaChecker) NormalizePhoneNumber(number string) string {
 	return number
 }
 
-// CheckQuota checks the quota for a given phone number
+// CheckQuota checks the quota for a given phone number.
+// Jika API return 401 (token expired), cache di-invalidate dan scrape ulang 1x.
 func (qc *QuotaChecker) CheckQuota(phoneNumber string) (string, error) {
+	return qc.checkQuotaOnce(phoneNumber, false)
+}
+
+func (qc *QuotaChecker) checkQuotaOnce(phoneNumber string, isRetry bool) (string, error) {
 	// Normalize phone number
 	normalized := qc.NormalizePhoneNumber(phoneNumber)
 	if normalized == "" {
@@ -294,10 +318,10 @@ func (qc *QuotaChecker) CheckQuota(phoneNumber string) (string, error) {
 	}
 
 	// Build API URL — endpoint resmi dari front-end xl-ku.my.id
-	url := fmt.Sprintf("%s/check/all-info/%s", xlKuBaseURL, normalized)
+	apiURL := fmt.Sprintf("%s/check/all-info/%s", xlKuBaseURL, normalized)
 
 	// Create request
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("Gagal membuat request: %v", err)
 	}
@@ -309,8 +333,6 @@ func (qc *QuotaChecker) CheckQuota(phoneNumber string) (string, error) {
 	}
 
 	// Add headers to mimic the browser request exactly like the site's JS does.
-	// xl-ku.my.id (Cloudflare) will answer 404 for requests without the
-	// custom token header or without browser-like headers.
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	req.Header.Set("Content-Type", "application/json")
@@ -349,6 +371,13 @@ func (qc *QuotaChecker) CheckQuota(phoneNumber string) (string, error) {
 		return "", fmt.Errorf("Gagal parsing JSON response: %v", err)
 	}
 
+	// Jika 401 / sesi expired dan belum retry → invalidate cache, scrape ulang
+	if !quotaResp.Success && !isRetry &&
+		(quotaResp.Code == "401" || strings.Contains(quotaResp.Message, "Sesi") || strings.Contains(quotaResp.Message, "401")) {
+		qc.invalidateToken()
+		return qc.checkQuotaOnce(phoneNumber, true)
+	}
+
 	// Check if API call was successful
 	if !quotaResp.Success {
 		return "", fmt.Errorf("API error: %s - %s", quotaResp.Code, quotaResp.Message)
@@ -357,6 +386,16 @@ func (qc *QuotaChecker) CheckQuota(phoneNumber string) (string, error) {
 	// Format the response
 	return qc.FormatQuotaResponse(&quotaResp), nil
 }
+
+// invalidateToken memaksa scrape ulang token di pemanggilan berikutnya.
+func (qc *QuotaChecker) invalidateToken() {
+	qc.tokenMu.Lock()
+	defer qc.tokenMu.Unlock()
+	qc.tokenHeader = ""
+	qc.tokenValue = ""
+	qc.tokenExpiry = time.Time{}
+}
+
 
 // getXLKuToken returns the current dynamic header (name + value) that
 // xl-ku.my.id expects. The site rotates the token by obfuscating it inside
@@ -386,17 +425,22 @@ func (qc *QuotaChecker) getXLKuToken() (string, string, error) {
 	return headerName, value, nil
 }
 
-// scrapeXLKuToken fetches /xlkujs/check-package and decodes the obfuscated
-// JS to extract the current xl-ku header name and value.
-//
-// How the site obfuscates the token:
-//   - The token is NOT in the homepage HTML. It lives in /xlkujs/check-package.
-//   - The JS defines a function that returns  {[keyBuilderFn()]: valueBuilderFn()}
-//     using a computed property key  (the header name) and a computed value.
-//   - Each builder is a chain of zero-arg functions that concatenate partial
-//     strings produced via base64+XOR, base64+SUB, reverse, trim, or literals.
-//   - We decode the chain recursively without executing JS.
+// scrapeXLKuToken fetches homepage (untuk ambil session cookie), lalu fetch
+// /xlkujs/check-package dan decode obfuscated JS untuk extract header token.
 func (qc *QuotaChecker) scrapeXLKuToken() (string, string, error) {
+	// Step 1: Visit homepage dulu agar cookie jar terisi session cookie
+	homepageReq, err := http.NewRequest("GET", xlKuBaseURL+"/", nil)
+	if err == nil {
+		homepageReq.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
+		homepageReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		homepageReq.Header.Set("Accept-Language", "en-US,en;q=0.9")
+		if hresp, herr := qc.client.Do(homepageReq); herr == nil {
+			io.Copy(io.Discard, hresp.Body)
+			hresp.Body.Close()
+		}
+	}
+
+	// Step 2: Fetch obfuscated JS
 	req, err := http.NewRequest("GET", xlKuCheckPackageJS, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("build request: %w", err)
@@ -442,6 +486,7 @@ func (qc *QuotaChecker) scrapeXLKuToken() (string, string, error) {
 
 	return headerName, headerValue, nil
 }
+
 
 // FormatQuotaResponse formats the quota response into a readable message
 func (qc *QuotaChecker) FormatQuotaResponse(resp *QuotaResponse) string {
