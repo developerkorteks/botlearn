@@ -120,6 +120,23 @@ func decodeJSFunc(name string, funcs map[string]string, depth int) string {
 		return sb.String()
 	}
 
+	// ── Pattern 1b: reduce array builder ────────────────────────────────────
+	// return [fn1(),fn2(),...].reduce(function(a,b){return a+b;});
+	if strings.Contains(body, ".reduce(") {
+		reduceRe := regexp.MustCompile(`\[([^\]]+)\]\.reduce`)
+		if rm := reduceRe.FindStringSubmatch(body); len(rm) == 2 {
+			callsRe := regexp.MustCompile(`(\w+)\(\)`)
+			calls := callsRe.FindAllStringSubmatch(rm[1], -1)
+			var sb strings.Builder
+			for _, c := range calls {
+				sb.WriteString(decodeJSFunc(c[1], funcs, depth+1))
+			}
+			if sb.Len() > 0 {
+				return sb.String()
+			}
+		}
+	}
+
 	// ── Pattern 2: XOR atob decode ───────────────────────────────────────────
 	// var v="b64"; var k=N; return atob(v).split('').map(function(c){return String.fromCharCode(c.charCodeAt(0)^k);}).join('');
 	xorRe := regexp.MustCompile(`var \w+="([A-Za-z0-9+/=]+)";\s*var \w+=(\d+);\s*return atob`)
